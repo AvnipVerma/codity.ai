@@ -346,5 +346,5 @@ written as UTF-8 bytes with `\n`, and a test runs the CLI under three
 | `rules.yaml` | shipped rules: SQL injection, command injection, path traversal, SSRF, XSS/SSTI, insecure deserialization, hard-coded secrets |
 | `corpus/` + `corpus/labels.json` | labelled benchmark corpus (80 files) |
 | `bench/evaluate.py` | precision/recall on the corpus; `bench/gen_large_repo.py` timing project; `bench/public_repos.md` triage |
-| `tests/` | 379 tests (378 by default + the opt-in timing test), one file per component |
+| `tests/` | 380 tests (379 by default + the opt-in timing test), one file per component |
 | `BENCHMARK.md`, `DECISIONS.md` | measured results and design decisions |

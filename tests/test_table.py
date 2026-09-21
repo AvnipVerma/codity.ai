@@ -80,3 +80,9 @@ def test_no_findings_message(tmp_path, repo_rules):
 def test_sorted_by_severity_then_location(tmp_path, repo_rules):
     lines = [l for l in render_table(_result(tmp_path, repo_rules)).splitlines() if l[1:9] in ("CRITICAL", "HIGH    ")]
     assert [l.split()[0] for l in lines] == ["CRITICAL", "HIGH"]
+
+
+def test_long_source_text_is_truncated_not_split_at_a_dot(run_scan):
+    code = "import os\nfrom flask import request\nos.system(request.args.get('host', '127.0.0.1.example.internal'))\n"
+    [f] = run_scan(code).findings
+    assert f.summary.startswith("request.args.get(")

@@ -679,6 +679,6 @@ def _short(text: str, limit: int = 32) -> str:
     if len(text) <= limit:
         return text
     head, dot, tail = text.rpartition(".")
-    if dot and len(tail) < limit - 2:
+    if dot and tail.isidentifier() and len(tail) < limit - 2:
         return "…." + tail
     return text[: limit - 1] + "…"
