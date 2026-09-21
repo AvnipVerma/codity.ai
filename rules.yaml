@@ -1,20 +1,352 @@
+# Rules for the codity scanner. Rules are data: add a vulnerability class by
+# adding an entry here. See README.md ("Writing rules") for the full schema.
+#
+# Pattern syntax: dotted paths, `*` matches exactly one segment. `*.execute`
+# also matches method calls on receivers whose type is unknown (`cur.execute`).
+# Single-segment builtin names (`open`, `eval`) mean `builtins.<name>`.
+#
+# Source choices (precision trade-off, see DECISIONS.md):
+#   * Flask request data is untrusted for every rule.
+#   * input()/sys.argv are untrusted for SQL, command, path and deserialization
+#     rules, but not for SSRF/XSS (CLI tools fetch URLs they are given).
+#   * Environment variables are untrusted only for SQL and command injection;
+#     for file paths and URLs they are almost always operator configuration.
+
 rules:
   - id: py.sql-injection
     severity: critical
     cwe: CWE-89
     message: "Untrusted input reaches a SQL query without parameterization"
     kind: taint
+    precision: high
+    help: >-
+      Pass user data as query parameters (cursor.execute("... WHERE id = %s", (value,)))
+      instead of formatting it into the SQL string.
     sources:
+      - pattern: flask.request.args
       - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
       - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.files
+      - pattern: flask.request.files.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+      - pattern: builtins.input
+      - pattern: sys.argv
+      - pattern: os.environ
       - pattern: os.environ.get
+      - pattern: os.getenv
     sinks:
-      - pattern: "*.execute"
-        arg: 0
-      - pattern: "*.executescript"
-        arg: 0
+      - {pattern: "*.execute", arg: 0, kwarg: [sql, query, statement, operation]}
+      - {pattern: "*.executemany", arg: 0}
+      - {pattern: "*.executescript", arg: 0}
+      - {pattern: sqlalchemy.text, arg: 0}
+      - {pattern: sqlalchemy.sql.text, arg: 0}
+      - {pattern: sqlalchemy.sql.expression.text, arg: 0}
+      - {pattern: "*.raw", arg: 0}
+      - {pattern: "*.extra", arg: any}
+      - {pattern: pandas.read_sql, arg: 0, kwarg: sql}
+      - {pattern: pandas.read_sql_query, arg: 0, kwarg: sql}
     sanitizers:
+      - pattern: builtins.int
+      - pattern: builtins.float
+      - pattern: builtins.bool
+      - pattern: uuid.UUID
       - pattern: myapp.db.quote_identifier
+
+  - id: py.command-injection
+    severity: critical
+    cwe: CWE-78
+    message: "Untrusted input reaches a shell command or code evaluation"
+    kind: taint
+    precision: high
+    help: >-
+      Pass arguments as a list without shell=True (subprocess.run(["ls", path])), or
+      quote them with shlex.quote(). Never eval/exec user data.
+    sources:
+      - pattern: flask.request.args
+      - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
+      - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.files
+      - pattern: flask.request.files.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+      - pattern: builtins.input
+      - pattern: sys.argv
+      - pattern: os.environ
+      - pattern: os.environ.get
+      - pattern: os.getenv
+    sinks:
+      - {pattern: os.system, arg: 0, kwarg: command}
+      - {pattern: os.popen, arg: 0, kwarg: cmd}
+      - {pattern: subprocess.run, arg: 0, kwarg: args, when: {kwarg: shell, is_true: true}}
+      - {pattern: subprocess.call, arg: 0, kwarg: args, when: {kwarg: shell, is_true: true}}
+      - {pattern: subprocess.check_call, arg: 0, kwarg: args, when: {kwarg: shell, is_true: true}}
+      - {pattern: subprocess.check_output, arg: 0, kwarg: args, when: {kwarg: shell, is_true: true}}
+      - {pattern: subprocess.Popen, arg: 0, kwarg: args, when: {kwarg: shell, is_true: true}}
+      - {pattern: subprocess.getoutput, arg: 0, kwarg: cmd}
+      - {pattern: subprocess.getstatusoutput, arg: 0, kwarg: cmd}
+      - {pattern: asyncio.create_subprocess_shell, arg: 0, kwarg: cmd}
+      - {pattern: os.execl, arg: any}
+      - {pattern: os.execle, arg: any}
+      - {pattern: os.execlp, arg: any}
+      - {pattern: os.execlpe, arg: any}
+      - {pattern: os.execv, arg: any}
+      - {pattern: os.execve, arg: any}
+      - {pattern: os.execvp, arg: any}
+      - {pattern: os.execvpe, arg: any}
+      - {pattern: os.spawnl, arg: any}
+      - {pattern: os.spawnlp, arg: any}
+      - {pattern: os.spawnv, arg: any}
+      - {pattern: os.spawnvp, arg: any}
+      - {pattern: builtins.eval, arg: 0}
+      - {pattern: builtins.exec, arg: 0}
+    sanitizers:
+      - pattern: shlex.quote
+      - pattern: pipes.quote
+      - pattern: builtins.int
+      - pattern: builtins.float
+      - pattern: builtins.bool
+      - pattern: uuid.UUID
+
+  - id: py.path-traversal
+    severity: high
+    cwe: CWE-22
+    message: "Untrusted input is used as a filesystem path"
+    kind: taint
+    precision: high
+    help: >-
+      Reduce user input to a bare file name with werkzeug.utils.secure_filename() or
+      os.path.basename(), or serve files with flask.send_from_directory().
+      Note: realpath(...).startswith(BASE) guards are not recognised by this rule.
+    sources:
+      - pattern: flask.request.args
+      - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
+      - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.files
+      - pattern: flask.request.files.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+      - pattern: builtins.input
+      - pattern: sys.argv
+    sinks:
+      - {pattern: builtins.open, arg: 0, kwarg: file}
+      - {pattern: io.open, arg: 0, kwarg: file}
+      - {pattern: codecs.open, arg: 0, kwarg: filename}
+      - {pattern: os.open, arg: 0, kwarg: path}
+      - {pattern: pathlib.Path, arg: 0}
+      - {pattern: "*.read_text", arg: receiver}
+      - {pattern: "*.read_bytes", arg: receiver}
+      - {pattern: "*.write_text", arg: receiver}
+      - {pattern: "*.write_bytes", arg: receiver}
+      - {pattern: os.remove, arg: any}
+      - {pattern: os.unlink, arg: any}
+      - {pattern: os.rmdir, arg: any}
+      - {pattern: os.removedirs, arg: any}
+      - {pattern: os.rename, arg: any}
+      - {pattern: os.makedirs, arg: 0, kwarg: name}
+      - {pattern: os.mkdir, arg: 0, kwarg: path}
+      - {pattern: os.listdir, arg: 0, kwarg: path}
+      - {pattern: shutil.rmtree, arg: any}
+      - {pattern: shutil.copy, arg: any}
+      - {pattern: shutil.copy2, arg: any}
+      - {pattern: shutil.copyfile, arg: any}
+      - {pattern: shutil.move, arg: any}
+      - {pattern: flask.send_file, arg: 0, kwarg: path_or_file}
+    sanitizers:
+      - pattern: werkzeug.utils.secure_filename
+      - pattern: werkzeug.secure_filename
+      - pattern: os.path.basename
+      - pattern: builtins.int
+      - pattern: uuid.UUID
+
+  - id: py.ssrf
+    severity: high
+    cwe: CWE-918
+    message: "Untrusted input controls the URL of a server-side request"
+    kind: taint
+    precision: high
+    help: >-
+      Do not let users choose the host of outbound requests. Map user input to an
+      allowlisted set of URLs, or validate the parsed host against an allowlist.
+    sources:
+      - pattern: flask.request.args
+      - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
+      - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+    sinks:
+      - {pattern: requests.get, arg: 0, kwarg: url}
+      - {pattern: requests.post, arg: 0, kwarg: url}
+      - {pattern: requests.put, arg: 0, kwarg: url}
+      - {pattern: requests.delete, arg: 0, kwarg: url}
+      - {pattern: requests.patch, arg: 0, kwarg: url}
+      - {pattern: requests.head, arg: 0, kwarg: url}
+      - {pattern: requests.options, arg: 0, kwarg: url}
+      - {pattern: requests.request, arg: 1, kwarg: url}
+      - {pattern: urllib.request.urlopen, arg: 0, kwarg: url}
+      - {pattern: urllib.request.Request, arg: 0, kwarg: url}
+      - {pattern: httpx.get, arg: 0, kwarg: url}
+      - {pattern: httpx.post, arg: 0, kwarg: url}
+      - {pattern: httpx.put, arg: 0, kwarg: url}
+      - {pattern: httpx.delete, arg: 0, kwarg: url}
+      - {pattern: httpx.patch, arg: 0, kwarg: url}
+      - {pattern: httpx.head, arg: 0, kwarg: url}
+      - {pattern: httpx.options, arg: 0, kwarg: url}
+      - {pattern: httpx.stream, arg: 1, kwarg: url}
+      - {pattern: httpx.request, arg: 1, kwarg: url}
+      - {pattern: http.client.HTTPConnection, arg: 0, kwarg: host}
+      - {pattern: http.client.HTTPSConnection, arg: 0, kwarg: host}
+    sanitizers: []
+
+  - id: py.xss-template
+    severity: high
+    cwe: CWE-79
+    message: "Untrusted input is rendered as a template or trusted markup"
+    kind: taint
+    precision: high
+    help: >-
+      Render user data through a template file with autoescaping
+      (render_template("page.html", name=name)), or escape it with markupsafe.escape().
+    sources:
+      - pattern: flask.request.args
+      - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
+      - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+    sinks:
+      - {pattern: flask.render_template_string, arg: 0, kwarg: source}
+      - {pattern: markupsafe.Markup, arg: 0}
+      - {pattern: flask.Markup, arg: 0}
+      - {pattern: jinja2.Markup, arg: 0}
+      - {pattern: jinja2.Template, arg: 0, kwarg: source}
+    sanitizers:
+      - pattern: markupsafe.escape
+      - pattern: flask.escape
+      - pattern: jinja2.escape
+      - pattern: html.escape
+      - pattern: bleach.clean
+      - pattern: builtins.int
+
+  - id: py.insecure-deserialization
+    severity: critical
+    cwe: CWE-502
+    message: "Untrusted input is deserialized with an unsafe loader"
+    kind: taint
+    precision: high
+    help: >-
+      Never unpickle data from users. Use json, or yaml.safe_load() /
+      yaml.load(data, Loader=yaml.SafeLoader) for YAML.
+    sources:
+      - pattern: flask.request.args
+      - pattern: flask.request.args.get
+      - pattern: flask.request.args.getlist
+      - pattern: flask.request.form
+      - pattern: flask.request.form.*
+      - pattern: flask.request.values
+      - pattern: flask.request.values.*
+      - pattern: flask.request.json
+      - pattern: flask.request.get_json
+      - pattern: flask.request.data
+      - pattern: flask.request.get_data
+      - pattern: flask.request.stream
+      - pattern: flask.request.cookies
+      - pattern: flask.request.cookies.*
+      - pattern: flask.request.headers
+      - pattern: flask.request.headers.*
+      - pattern: flask.request.files
+      - pattern: flask.request.files.*
+      - pattern: flask.request.view_args
+      - pattern: flask.request.view_args.*
+      - pattern: builtins.input
+      - pattern: sys.argv
+    sinks:
+      - {pattern: pickle.loads, arg: 0, kwarg: data}
+      - {pattern: pickle.load, arg: 0, kwarg: file}
+      - {pattern: pickle.Unpickler, arg: 0, kwarg: file}
+      - {pattern: _pickle.loads, arg: 0}
+      - {pattern: cPickle.loads, arg: 0}
+      - {pattern: cPickle.load, arg: 0}
+      - {pattern: dill.loads, arg: 0}
+      - {pattern: dill.load, arg: 0}
+      - {pattern: marshal.loads, arg: 0}
+      - {pattern: marshal.load, arg: 0}
+      - {pattern: shelve.open, arg: 0, kwarg: filename}
+      - {pattern: jsonpickle.decode, arg: 0, kwarg: string}
+      - {pattern: pandas.read_pickle, arg: 0}
+      - {pattern: joblib.load, arg: 0}
+      - {pattern: torch.load, arg: 0, kwarg: f}
+      - {pattern: yaml.unsafe_load, arg: 0, kwarg: stream}
+      - {pattern: yaml.unsafe_load_all, arg: 0, kwarg: stream}
+      - {pattern: yaml.full_load, arg: 0, kwarg: stream}
+      - {pattern: yaml.full_load_all, arg: 0, kwarg: stream}
+      - pattern: yaml.load
+        arg: 0
+        kwarg: stream
+        when: {kwarg: Loader, pos: 1, not_in: [yaml.SafeLoader, yaml.CSafeLoader, yaml.BaseLoader, yaml.CBaseLoader]}
+      - pattern: yaml.load_all
+        arg: 0
+        kwarg: stream
+        when: {kwarg: Loader, pos: 1, not_in: [yaml.SafeLoader, yaml.CSafeLoader, yaml.BaseLoader, yaml.CBaseLoader]}
 
   - id: py.hardcoded-secret
     severity: high
