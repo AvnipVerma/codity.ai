@@ -99,7 +99,8 @@ rules:
       - {pattern: pandas.read_sql, arg: 0, kwarg: sql}
       - {pattern: pandas.read_sql_query, arg: 0, kwarg: sql}
     sanitizers:
-      - patterns: [builtins.int, builtins.float, builtins.bool, uuid.UUID, myapp.db.quote_identifier]
+      - patterns: [builtins.int, builtins.float, builtins.bool, uuid.UUID, myapp.db.quote_identifier,
+                   psycopg2.sql.Identifier, psycopg2.sql.Literal]
 
   - id: py.command-injection
     severity: critical
@@ -142,6 +143,8 @@ rules:
       - {pattern: os.spawnvp, arg: any}
       - {pattern: builtins.eval, arg: 0}
       - {pattern: builtins.exec, arg: 0}
+      - {pattern: builtins.__import__, arg: 0}
+      - {pattern: importlib.import_module, arg: 0}
     sanitizers:
       - patterns: [shlex.quote, pipes.quote, builtins.int, builtins.float, builtins.bool, uuid.UUID]
 
@@ -185,6 +188,8 @@ rules:
       - {pattern: shutil.copyfile, arg: any}
       - {pattern: shutil.move, arg: any}
       - {pattern: flask.send_file, arg: 0, kwarg: path_or_file}
+      - {pattern: tarfile.open, arg: 0, kwarg: name}
+      - {pattern: zipfile.ZipFile, arg: 0, kwarg: file}
       - {pattern: django.http.FileResponse, arg: 0}
     sanitizers:
       - patterns: [werkzeug.utils.secure_filename, werkzeug.secure_filename, os.path.basename,
@@ -285,12 +290,14 @@ rules:
       - {pattern: flask.Markup, arg: 0}
       - {pattern: jinja2.Markup, arg: 0}
       - {pattern: jinja2.Template, arg: 0, kwarg: source}
+      - {pattern: jinja2.Environment.from_string, arg: 0, kwarg: source}
+      - {pattern: jinja2.environment.Environment.from_string, arg: 0, kwarg: source}
       - {pattern: django.utils.safestring.mark_safe, arg: 0}
       - {pattern: django.utils.html.format_html, arg: 0}
       - {pattern: django.template.Template, arg: 0}
     sanitizers:
-      - patterns: [markupsafe.escape, flask.escape, jinja2.escape, html.escape, bleach.clean,
-                   django.utils.html.escape, builtins.int]
+      - patterns: [markupsafe.escape, markupsafe.Markup.escape, flask.escape, jinja2.escape,
+                   html.escape, bleach.clean, django.utils.html.escape, builtins.int]
 
   - id: py.insecure-deserialization
     severity: critical

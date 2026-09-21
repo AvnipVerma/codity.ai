@@ -404,3 +404,29 @@ def view(request):
 """,
         rule=XSS,
     )
+
+
+def test_additional_library_idioms(check):
+    check(
+        H
+        + """
+import importlib, tarfile, jinja2
+from psycopg2 import sql
+from markupsafe import Markup
+
+def f(cur):
+    t = request.args['t']
+    cur.execute(sql.SQL("SELECT * FROM {} WHERE a = %s").format(sql.Identifier(t)), (t,))
+    cur.execute(sql.SQL("SELECT * FROM " + t))  # SINK
+""",
+        rule=SQL,
+    )
+    check(H + "import importlib\ndef f():\n    importlib.import_module(request.args['m'])  # SINK\n    __import__(request.args['m'])  # SINK\n", rule=CMD)
+    check(H + "import tarfile\ndef f():\n    tarfile.open(request.args['archive'])  # SINK\n", rule=PATH)
+    check(
+        H
+        + "import jinja2\nfrom markupsafe import Markup\n"
+        + "def f():\n    env = jinja2.Environment()\n    env.from_string('Hi ' + request.args['n']).render()  # SINK\n"
+        + "    Markup('<b>' + Markup.escape(request.args['n']) + '</b>')\n",
+        rule=XSS,
+    )
