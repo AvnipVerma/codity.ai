@@ -569,11 +569,21 @@ class TaintProgram:
             path=steps,
             identity=(site.text, origin.text),
             snippet=site.text,
-            summary=f"{origin.text} reaches {site.callee}() {site.arg}",
+            summary=f"{_short(origin.text)} reaches {_short(site.callee)}() {site.arg}",
         )
 
     def findings_for(self, path: str) -> list[Finding]:
         return list(self._by_file.get(path, ()))
+
+
+def _short(text: str, limit: int = 32) -> str:
+    """``sqlite3.connect('db').execute`` -> ``….execute`` for one-line summaries."""
+    if len(text) <= limit:
+        return text
+    head, dot, tail = text.rpartition(".")
+    if dot and len(tail) < limit - 2:
+        return "…." + tail
+    return text[: limit - 1] + "…"
 
 
 def _body_nodes(fi: FunctionInfo):

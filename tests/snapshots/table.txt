@@ -1,0 +1,13 @@
+ SEVERITY   RULE                LOCATION      MESSAGE
+ ────────── ─────────────────── ───────────── ──────────────────────────────────────────────────────
+ CRITICAL   py.sql-injection    views.py:10:5 request.args.get('id') reaches sqlite3.connect('db').…
+            ├─ source   views.py:8:15  untrusted data from `request.args.get('id')`
+            ├─ step     views.py:8:5   assigned to `user_id`
+            ├─ step     views.py:9:13  interpolated into an f-string
+            ├─ step     views.py:9:5   assigned to `query`
+            └─ sink     views.py:10:5  sqlite3.connect('db').execute(query) [arg 0]
+
+ HIGH       py.hardcoded-secret views.py:4:1  AWS_SECRET_KEY = "wJal…(40 chars)" (entropy 4.7)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 2 findings  ·  1 critical  ·  1 high  ·  0 medium  ·  0 low     (0 suppressed)

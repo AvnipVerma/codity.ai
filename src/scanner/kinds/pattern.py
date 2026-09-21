@@ -156,6 +156,7 @@ class PatternKind(RuleKind):
                         location=loc,
                         identity=(name, digest),
                         snippet=f'{name} = "{shown}"',
+                        summary=f'{name} = "{shown}" (entropy {entropy:.1f})',
                         properties={"entropy": round(entropy, 2), "form": form},
                     )
                 )

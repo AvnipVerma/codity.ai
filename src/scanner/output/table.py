@@ -71,7 +71,13 @@ def render_table(
         sev_w = 10
         rule_w = min(max([len("RULE")] + [len(f.rule_id) for f in findings]), 34)
         loc_w = min(max([len("LOCATION")] + [len(f.location.short()) for f in findings]), 40)
-        msg_w = max(width - (1 + sev_w + 1 + rule_w + 1 + loc_w + 1), 20)
+        # On narrow terminals shrink RULE and LOCATION before MESSAGE gets too small.
+        while width - (sev_w + rule_w + loc_w + 4) < 24 and (rule_w > 12 or loc_w > 12):
+            if loc_w >= rule_w and loc_w > 12:
+                loc_w -= 1
+            else:
+                rule_w -= 1
+        msg_w = max(width - (1 + sev_w + 1 + rule_w + 1 + loc_w + 1), 10)
 
         def row(sev: str, rule: str, loc: str, msg: str) -> str:
             return " ".join(
