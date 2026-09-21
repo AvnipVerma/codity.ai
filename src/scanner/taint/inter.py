@@ -264,6 +264,7 @@ class TaintProgram:
         self.module_functions: dict[str, dict[str, FunctionInfo]] = {}
         self.module_classes: dict[str, dict[str, ClassInfo]] = {}
         self._oracles: dict[str, object] = {}
+        self._imports: dict[str, set] = {}
         self.summaries: dict[str, Summary] = {}
         self.fn_findings: dict[str, dict] = {}
         self.fields: dict[str, dict] = {}
@@ -374,6 +375,16 @@ class TaintProgram:
             cls = self.module_classes.get(mod.path, {}).get(rest[0])
             return cls is not None and rest[1] in cls.const_attrs
         return False
+
+    def module_imports_any(self, mod, names: tuple[str, ...]) -> bool:
+        """Does ``mod`` import (at module level) any of these top-level packages?"""
+        if not names:
+            return True
+        tops = self._imports.get(mod.path)
+        if tops is None:
+            tops = {r.name.split(".", 1)[0] for refs in mod.resolver.bindings.values() for r in refs if r.kind == PATH}
+            self._imports[mod.path] = tops
+        return any(n in tops for n in names)
 
     def canonical(self, name: str, near: str) -> str:
         key = (name, near)

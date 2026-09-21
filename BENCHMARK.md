@@ -39,24 +39,24 @@ about suppression comments are not scored.
 ## 2. Results
 
 <!-- evaluate:begin -->
-Corpus: 80 files (42 under vulnerable/, 38 under safe/), 44 expected findings.
+Corpus: 90 files (47 under vulnerable/, 43 under safe/), 49 expected findings.
 
 | Metric | Value |
 |---|---|
-| True positives | 41 |
+| True positives | 47 |
 | False positives | 4 |
-| False negatives | 3 |
-| Precision | 0.911 |
-| Recall | 0.932 |
-| F1 | 0.921 |
+| False negatives | 2 |
+| Precision | 0.922 |
+| Recall | 0.959 |
+| F1 | 0.940 |
 
 | Rule | TP | FP | FN | Precision | Recall | F1 |
 |---|---|---|---|---|---|---|
-| py.sql-injection | 13 | 2 | 1 | 0.867 | 0.929 | 0.897 |
-| py.command-injection | 6 | 0 | 1 | 1.000 | 0.857 | 0.923 |
-| py.path-traversal | 5 | 1 | 0 | 0.833 | 1.000 | 0.909 |
-| py.ssrf | 4 | 0 | 0 | 1.000 | 1.000 | 1.000 |
-| py.xss-template | 3 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| py.sql-injection | 15 | 2 | 0 | 0.882 | 1.000 | 0.938 |
+| py.command-injection | 7 | 0 | 1 | 1.000 | 0.875 | 0.933 |
+| py.path-traversal | 6 | 1 | 0 | 0.857 | 1.000 | 0.923 |
+| py.ssrf | 5 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| py.xss-template | 4 | 0 | 0 | 1.000 | 1.000 | 1.000 |
 | py.insecure-deserialization | 4 | 0 | 0 | 1.000 | 1.000 | 1.000 |
 | py.hardcoded-secret | 6 | 1 | 1 | 0.857 | 0.857 | 0.857 |
 
@@ -71,7 +71,6 @@ False negatives:
 
 - `vulnerable/cmd_sh_dash_c.py:12` py.command-injection
 - `vulnerable/secret_weak_password.py:6` py.hardcoded-secret
-- `vulnerable/sqli_django_view.py:9` py.sql-injection
 <!-- evaluate:end -->
 
 All seven remaining errors were predicted in the labels' notes before the

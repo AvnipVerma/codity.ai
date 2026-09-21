@@ -262,7 +262,7 @@ def attr_refs(base: Iterable[Ref], attr: str) -> frozenset[Ref]:
     for r in base:
         if r.kind == PATH:
             out.add(Ref(PATH, f"{r.name}.{attr}"))
-        elif r.kind in (INST, RET):
+        elif r.kind in (INST, RET, BOUND):
             out.add(Ref(BOUND, f"{r.name}.{attr}"))
     return frozenset(out)
 

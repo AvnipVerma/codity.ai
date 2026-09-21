@@ -5,8 +5,12 @@
 # also matches method calls on receivers whose type is unknown (`cur.execute`).
 # Single-segment builtin names (`open`, `eval`) mean `builtins.<name>`.
 #
+# Source groups are defined once with YAML anchors (&name) in the first rule
+# and reused (*name) by the others.
+#
 # Source choices (precision trade-off, see DECISIONS.md):
-#   * Flask request data is untrusted for every rule.
+#   * Web request data (Flask, Django, DRF, aiohttp, Starlette/FastAPI request
+#     objects) is untrusted for every rule.
 #   * input()/sys.argv are untrusted for SQL, command, path and deserialization
 #     rules, but not for SSRF/XSS (CLI tools fetch URLs they are given).
 #   * Environment variables are untrusted only for SQL and command injection;
@@ -23,39 +27,65 @@ rules:
       Pass user data as query parameters (cursor.execute("... WHERE id = %s", (value,)))
       instead of formatting it into the SQL string.
     sources:
-      - pattern: flask.request.args
-      - pattern: flask.request.args.get
-        # request.args.get('page', type=int) returns a converted number
+      # Flask's global request object. MultiDict getters are not sources when
+      # werkzeug converts the value: request.args.get('page', type=int).
+      - patterns: &flask_getters [flask.request.args.get, flask.request.args.getlist,
+                                  flask.request.form.*, flask.request.values.*]
         when: &not_converted {kwarg: type, not_in: [int, float, bool]}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.files
-      - pattern: flask.request.files.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
-      - pattern: builtins.input
-      - pattern: sys.argv
-      - pattern: os.environ
-      - pattern: os.environ.get
-      - pattern: os.getenv
+      - patterns: &flask_request [flask.request.args, flask.request.form, flask.request.values,
+                                  flask.request.json, flask.request.get_json, flask.request.data,
+                                  flask.request.get_data, flask.request.stream,
+                                  flask.request.cookies, flask.request.cookies.*,
+                                  flask.request.headers, flask.request.headers.*,
+                                  flask.request.files, flask.request.files.*,
+                                  flask.request.view_args, flask.request.view_args.*,
+                                  flask.request.url, flask.request.base_url, flask.request.full_path,
+                                  flask.request.path, flask.request.query_string,
+                                  flask.request.referrer, flask.request.user_agent]
+      # Request objects that frameworks pass to views as a parameter. See
+      # typed_parameters below; annotated parameters (request: HttpRequest) are
+      # typed from their annotation.
+      - patterns: &framework_requests [
+          django.http.HttpRequest.GET, django.http.HttpRequest.GET.*,
+          django.http.HttpRequest.POST, django.http.HttpRequest.POST.*,
+          django.http.HttpRequest.COOKIES, django.http.HttpRequest.COOKIES.*,
+          django.http.HttpRequest.FILES, django.http.HttpRequest.FILES.*,
+          django.http.HttpRequest.META, django.http.HttpRequest.META.*,
+          django.http.HttpRequest.headers, django.http.HttpRequest.headers.*,
+          django.http.HttpRequest.body, django.http.HttpRequest.path,
+          django.http.HttpRequest.path_info, django.http.HttpRequest.get_full_path,
+          rest_framework.request.Request.data, rest_framework.request.Request.data.*,
+          rest_framework.request.Request.query_params, rest_framework.request.Request.query_params.*,
+          rest_framework.request.Request.GET, rest_framework.request.Request.GET.*,
+          rest_framework.request.Request.POST, rest_framework.request.Request.POST.*,
+          rest_framework.request.Request.COOKIES, rest_framework.request.Request.COOKIES.*,
+          rest_framework.request.Request.FILES, rest_framework.request.Request.FILES.*,
+          rest_framework.request.Request.headers, rest_framework.request.Request.headers.*,
+          aiohttp.web.Request.query, aiohttp.web.Request.query.*,
+          aiohttp.web.Request.match_info, aiohttp.web.Request.match_info.*,
+          aiohttp.web.Request.headers, aiohttp.web.Request.headers.*,
+          aiohttp.web.Request.cookies, aiohttp.web.Request.cookies.*,
+          aiohttp.web.Request.post, aiohttp.web.Request.json, aiohttp.web.Request.text,
+          aiohttp.web.Request.read, aiohttp.web.Request.rel_url, aiohttp.web.Request.path,
+          fastapi.Request.query_params, fastapi.Request.query_params.*,
+          fastapi.Request.path_params, fastapi.Request.path_params.*,
+          fastapi.Request.headers, fastapi.Request.headers.*,
+          fastapi.Request.cookies, fastapi.Request.cookies.*,
+          fastapi.Request.json, fastapi.Request.form, fastapi.Request.body,
+          starlette.requests.Request.query_params, starlette.requests.Request.query_params.*,
+          starlette.requests.Request.path_params, starlette.requests.Request.path_params.*,
+          starlette.requests.Request.headers, starlette.requests.Request.headers.*,
+          starlette.requests.Request.cookies, starlette.requests.Request.cookies.*,
+          starlette.requests.Request.json, starlette.requests.Request.form,
+          starlette.requests.Request.body]
+      # Process input
+      - patterns: &cli_input [builtins.input, sys.argv]
+      - patterns: &environment [os.environ, os.environ.get, os.getenv]
+    typed_parameters: &framework_parameters
+      # first match wins: a DRF module also imports django
+      - {name: request, type: rest_framework.request.Request, module_imports: [rest_framework]}
+      - {name: request, type: django.http.HttpRequest, module_imports: [django]}
+      - {name: request, type: aiohttp.web.Request, module_imports: [aiohttp]}
     sinks:
       - {pattern: "*.execute", arg: 0, kwarg: [sql, query, statement, operation]}
       - {pattern: "*.executemany", arg: 0}
@@ -69,11 +99,7 @@ rules:
       - {pattern: pandas.read_sql, arg: 0, kwarg: sql}
       - {pattern: pandas.read_sql_query, arg: 0, kwarg: sql}
     sanitizers:
-      - pattern: builtins.int
-      - pattern: builtins.float
-      - pattern: builtins.bool
-      - pattern: uuid.UUID
-      - pattern: myapp.db.quote_identifier
+      - patterns: [builtins.int, builtins.float, builtins.bool, uuid.UUID, myapp.db.quote_identifier]
 
   - id: py.command-injection
     severity: critical
@@ -85,37 +111,12 @@ rules:
       Pass arguments as a list without shell=True (subprocess.run(["ls", path])), or
       quote them with shlex.quote(). Never eval/exec user data.
     sources:
-      - pattern: flask.request.args
-      - {pattern: flask.request.args.get, when: *not_converted}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.files
-      - pattern: flask.request.files.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
-      - pattern: builtins.input
-      - pattern: sys.argv
-      - pattern: os.environ
-      - pattern: os.environ.get
-      - pattern: os.getenv
+      - {patterns: *flask_getters, when: *not_converted}
+      - patterns: *flask_request
+      - patterns: *framework_requests
+      - patterns: *cli_input
+      - patterns: *environment
+    typed_parameters: *framework_parameters
     sinks:
       - {pattern: os.system, arg: 0, kwarg: command}
       - {pattern: os.popen, arg: 0, kwarg: cmd}
@@ -142,12 +143,7 @@ rules:
       - {pattern: builtins.eval, arg: 0}
       - {pattern: builtins.exec, arg: 0}
     sanitizers:
-      - pattern: shlex.quote
-      - pattern: pipes.quote
-      - pattern: builtins.int
-      - pattern: builtins.float
-      - pattern: builtins.bool
-      - pattern: uuid.UUID
+      - patterns: [shlex.quote, pipes.quote, builtins.int, builtins.float, builtins.bool, uuid.UUID]
 
   - id: py.path-traversal
     severity: high
@@ -160,34 +156,11 @@ rules:
       os.path.basename(), or serve files with flask.send_from_directory().
       Note: realpath(...).startswith(BASE) guards are not recognised by this rule.
     sources:
-      - pattern: flask.request.args
-      - {pattern: flask.request.args.get, when: *not_converted}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.files
-      - pattern: flask.request.files.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
-      - pattern: builtins.input
-      - pattern: sys.argv
+      - {patterns: *flask_getters, when: *not_converted}
+      - patterns: *flask_request
+      - patterns: *framework_requests
+      - patterns: *cli_input
+    typed_parameters: *framework_parameters
     sinks:
       - {pattern: builtins.open, arg: 0, kwarg: file}
       - {pattern: io.open, arg: 0, kwarg: file}
@@ -212,12 +185,10 @@ rules:
       - {pattern: shutil.copyfile, arg: any}
       - {pattern: shutil.move, arg: any}
       - {pattern: flask.send_file, arg: 0, kwarg: path_or_file}
+      - {pattern: django.http.FileResponse, arg: 0}
     sanitizers:
-      - pattern: werkzeug.utils.secure_filename
-      - pattern: werkzeug.secure_filename
-      - pattern: os.path.basename
-      - pattern: builtins.int
-      - pattern: uuid.UUID
+      - patterns: [werkzeug.utils.secure_filename, werkzeug.secure_filename, os.path.basename,
+                   builtins.int, uuid.UUID]
 
   - id: py.ssrf
     severity: high
@@ -229,30 +200,10 @@ rules:
       Do not let users choose the host of outbound requests. Map user input to an
       allowlisted set of URLs, or validate the parsed host against an allowlist.
     sources:
-      - pattern: flask.request.args
-      - {pattern: flask.request.args.get, when: *not_converted}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
+      - {patterns: *flask_getters, when: *not_converted}
+      - patterns: *flask_request
+      - patterns: *framework_requests
+    typed_parameters: *framework_parameters
     sinks:
       - {pattern: requests.get, arg: 0, kwarg: url}
       - {pattern: requests.post, arg: 0, kwarg: url}
@@ -324,43 +275,22 @@ rules:
       Render user data through a template file with autoescaping
       (render_template("page.html", name=name)), or escape it with markupsafe.escape().
     sources:
-      - pattern: flask.request.args
-      - {pattern: flask.request.args.get, when: *not_converted}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
+      - {patterns: *flask_getters, when: *not_converted}
+      - patterns: *flask_request
+      - patterns: *framework_requests
+    typed_parameters: *framework_parameters
     sinks:
       - {pattern: flask.render_template_string, arg: 0, kwarg: source}
       - {pattern: markupsafe.Markup, arg: 0}
       - {pattern: flask.Markup, arg: 0}
       - {pattern: jinja2.Markup, arg: 0}
       - {pattern: jinja2.Template, arg: 0, kwarg: source}
+      - {pattern: django.utils.safestring.mark_safe, arg: 0}
+      - {pattern: django.utils.html.format_html, arg: 0}
+      - {pattern: django.template.Template, arg: 0}
     sanitizers:
-      - pattern: markupsafe.escape
-      - pattern: flask.escape
-      - pattern: jinja2.escape
-      - pattern: html.escape
-      - pattern: bleach.clean
-      - pattern: builtins.int
+      - patterns: [markupsafe.escape, flask.escape, jinja2.escape, html.escape, bleach.clean,
+                   django.utils.html.escape, builtins.int]
 
   - id: py.insecure-deserialization
     severity: critical
@@ -372,35 +302,11 @@ rules:
       Never unpickle data from users. Use json, or yaml.safe_load() /
       yaml.load(data, Loader=yaml.SafeLoader) for YAML.
     sources:
-      - pattern: flask.request.args
-      - {pattern: flask.request.args.get, when: *not_converted}
-      - {pattern: flask.request.args.getlist, when: *not_converted}
-      - pattern: flask.request.form
-      - {pattern: flask.request.form.*, when: *not_converted}
-      - pattern: flask.request.values
-      - {pattern: flask.request.values.*, when: *not_converted}
-      - pattern: flask.request.json
-      - pattern: flask.request.get_json
-      - pattern: flask.request.data
-      - pattern: flask.request.get_data
-      - pattern: flask.request.stream
-      - pattern: flask.request.cookies
-      - pattern: flask.request.cookies.*
-      - pattern: flask.request.headers
-      - pattern: flask.request.headers.*
-      - pattern: flask.request.files
-      - pattern: flask.request.files.*
-      - pattern: flask.request.view_args
-      - pattern: flask.request.view_args.*
-      - pattern: flask.request.url
-      - pattern: flask.request.base_url
-      - pattern: flask.request.full_path
-      - pattern: flask.request.path
-      - pattern: flask.request.query_string
-      - pattern: flask.request.referrer
-      - pattern: flask.request.user_agent
-      - pattern: builtins.input
-      - pattern: sys.argv
+      - {patterns: *flask_getters, when: *not_converted}
+      - patterns: *flask_request
+      - patterns: *framework_requests
+      - patterns: *cli_input
+    typed_parameters: *framework_parameters
     sinks:
       - {pattern: pickle.loads, arg: 0, kwarg: data}
       - {pattern: pickle.load, arg: 0, kwarg: file}
@@ -424,11 +330,8 @@ rules:
       - pattern: yaml.load
         arg: 0
         kwarg: stream
-        when: {kwarg: Loader, pos: 1, not_in: [yaml.SafeLoader, yaml.CSafeLoader, yaml.BaseLoader, yaml.CBaseLoader]}
-      - pattern: yaml.load_all
-        arg: 0
-        kwarg: stream
-        when: {kwarg: Loader, pos: 1, not_in: [yaml.SafeLoader, yaml.CSafeLoader, yaml.BaseLoader, yaml.CBaseLoader]}
+        when: &unsafe_loader {kwarg: Loader, pos: 1, not_in: [yaml.SafeLoader, yaml.CSafeLoader, yaml.BaseLoader, yaml.CBaseLoader]}
+      - {pattern: yaml.load_all, arg: 0, kwarg: stream, when: *unsafe_loader}
 
   - id: py.hardcoded-secret
     severity: high

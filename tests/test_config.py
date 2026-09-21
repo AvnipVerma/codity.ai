@@ -118,3 +118,27 @@ def test_bad_yaml_is_rule_error(tmp_path):
     p.write_text("rules: [\n", encoding="utf-8")
     with pytest.raises(RuleError, match="invalid YAML"):
         load_rules(str(p))
+
+
+def test_patterns_list_and_typed_parameters_validation():
+    doc = yaml.safe_load(VALID)
+    rule = doc["rules"][0]
+    rule["sources"] = [{"patterns": ["a.b", "c.*"]}]
+    rule["typed_parameters"] = [{"name": "request", "type": "django.http.HttpRequest", "module_imports": ["django"]}]
+    rules, warnings = parse_rules(doc)
+    assert [s.pattern for s in rules[0].compiled.sources] == ["a.b", "c.*"]
+    assert warnings == []
+    for bad, fragment in [
+        ({"patterns": []}, "must be a non-empty list"),
+        ({"pattern": "a.b", "patterns": ["c"]}, "'pattern' or a 'patterns' list"),
+        ({"patterns": ["a..b"]}, "empty segment"),
+    ]:
+        doc2 = yaml.safe_load(VALID)
+        doc2["rules"][0]["sources"] = [bad]
+        with pytest.raises(RuleError, match=fragment):
+            parse_rules(doc2)
+    doc3 = yaml.safe_load(VALID)
+    doc3["rules"][0]["typed_parameters"] = [{"name": "req uest", "type": "a.*"}]
+    with pytest.raises(RuleError) as info:
+        parse_rules(doc3)
+    assert "typed_parameters[0].name" in str(info.value) and "without wildcards" in str(info.value)

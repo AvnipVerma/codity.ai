@@ -4,6 +4,7 @@ Rule schema (see rules.yaml for real examples)::
 
     kind: taint
     sources:    [{pattern: flask.request.args.get}, ...]      # required
+                # an entry may list several: {patterns: [a.b, c.d]} (handy with YAML anchors)
     sinks:
       - pattern: "*.execute"
         arg: 0              # int, list of ints, "any" (default) or "receiver"
@@ -12,12 +13,20 @@ Rule schema (see rules.yaml for real examples)::
           {kwarg: shell, is_true: true}
     sanitizers: [{pattern: shlex.quote}, ...]                 # optional
     safe_prefixes: ["https://*/*"]                            # optional
+    typed_parameters:                                          # optional
+      - {name: request, type: django.http.HttpRequest, module_imports: [django]}
 
 ``safe_prefixes`` are globs matched against the constant leading text of a
 string built by concatenation, an f-string, ``%`` or ``str.format``. When it
 matches, the result no longer carries this rule's taint: for SSRF, a URL whose
 scheme and host are fixed constants cannot be pointed at another host by what
 follows.
+
+``typed_parameters`` give a type to parameters that frameworks inject: in a
+module importing one of ``module_imports``, a parameter called ``name`` is
+treated as an instance of ``type``, so ``request.GET`` resolves to
+``django.http.HttpRequest.GET`` and ordinary dotted source patterns apply.
+(Parameters with a type annotation are typed from the annotation already.)
 
 The analysis itself lives in :mod:`scanner.taint`; this class only validates
 and compiles rules, runs the whole-program pass in :meth:`prepare`, and hands
@@ -33,8 +42,9 @@ from ..taint.spec import ANY, RECEIVER, compile_rule
 from .base import Issue, RuleKind
 
 SINK_KEYS = frozenset({"pattern", "arg", "kwarg", "kwargs", "when"})
-SOURCE_KEYS = frozenset({"pattern", "when"})
-SIMPLE_KEYS = frozenset({"pattern"})
+SOURCE_KEYS = frozenset({"pattern", "patterns", "when"})
+SIMPLE_KEYS = frozenset({"pattern", "patterns"})
+TYPED_KEYS = frozenset({"name", "type", "module_imports"})
 WHEN_KEYS = frozenset({"kwarg", "pos", "is_true", "in", "not_in"})
 
 
@@ -52,7 +62,7 @@ def _nonneg_int(value: Any) -> bool:
 
 class TaintKind(RuleKind):
     name = "taint"
-    fields = frozenset({"sources", "sinks", "sanitizers", "safe_prefixes"})
+    fields = frozenset({"sources", "sinks", "sanitizers", "safe_prefixes", "typed_parameters"})
     default_precision = "high"
 
     def validate(self, rule: Mapping[str, Any]) -> list[Issue]:
@@ -66,10 +76,20 @@ class TaintKind(RuleKind):
                 continue
             for i, item in enumerate(items):
                 where = f"{section}[{i}]"
-                if not isinstance(item, dict) or "pattern" not in item:
-                    issues.append((where, "must be a mapping with a 'pattern' key"))
+                many = section != "sinks" and isinstance(item, dict) and "patterns" in item
+                if not isinstance(item, dict) or (("pattern" in item) == many):
+                    wanted = "'pattern' key" if section == "sinks" else "'pattern' or a 'patterns' list"
+                    issues.append((where, f"must be a mapping with a {wanted}"))
                     continue
-                issues += _pattern_issues(f"{where}.pattern", item["pattern"])
+                if many:
+                    pats = item["patterns"]
+                    if not isinstance(pats, list) or not pats:
+                        issues.append((f"{where}.patterns", "must be a non-empty list of patterns"))
+                        continue
+                    for k, pat in enumerate(pats):
+                        issues += _pattern_issues(f"{where}.patterns[{k}]", pat)
+                else:
+                    issues += _pattern_issues(f"{where}.pattern", item["pattern"])
                 allowed = {"sinks": SINK_KEYS, "sources": SOURCE_KEYS}.get(section, SIMPLE_KEYS)
                 for key in item:
                     if key not in allowed:
@@ -82,6 +102,27 @@ class TaintKind(RuleKind):
             prefixes = rule["safe_prefixes"]
             if not isinstance(prefixes, list) or not all(isinstance(p, str) and p for p in prefixes):
                 issues.append(("safe_prefixes", "must be a list of non-empty glob strings"))
+        if "typed_parameters" in rule:
+            typed = rule["typed_parameters"]
+            if not isinstance(typed, list):
+                issues.append(("typed_parameters", "must be a list of mappings"))
+            else:
+                for i, entry in enumerate(typed):
+                    where = f"typed_parameters[{i}]"
+                    if not isinstance(entry, dict):
+                        issues.append((where, "must be a mapping"))
+                        continue
+                    if not isinstance(entry.get("name"), str) or not entry["name"].isidentifier():
+                        issues.append((f"{where}.name", "is required and must be an identifier"))
+                    issues += _pattern_issues(f"{where}.type", entry.get("type"))
+                    if isinstance(entry.get("type"), str) and "*" in entry["type"]:
+                        issues.append((f"{where}.type", "must be a dotted name without wildcards"))
+                    mods = entry.get("module_imports", [])
+                    if not isinstance(mods, list) or not all(isinstance(m, str) and m.isidentifier() for m in mods):
+                        issues.append((f"{where}.module_imports", "must be a list of top-level module names"))
+                    for key in entry:
+                        if key not in TYPED_KEYS:
+                            issues.append((f"{where}.{key}", "unknown key"))
         return issues
 
     def _sink_issues(self, where: str, item: dict) -> list[Issue]:

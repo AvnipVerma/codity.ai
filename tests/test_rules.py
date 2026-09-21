@@ -316,3 +316,91 @@ def other():
     ,
         rule=XSS,
     )
+
+
+# ---------------------------------------------------------------- framework request parameters
+
+
+def test_django_function_and_class_views(check):
+    check(
+        """
+import subprocess
+from django.db import connection
+from django.views import View
+
+def search(request):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM t WHERE n = '" + request.GET["n"] + "'")  # SINK
+        cursor.execute("SELECT * FROM t WHERE n = %s", [request.GET["n"]])
+        cursor.execute("SELECT * FROM t WHERE n = " + request.POST.get("n"))  # SINK
+
+class Report(View):
+    def post(self, request, *args, **kwargs):
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM t WHERE id = " + request.body.decode())  # SINK
+""",
+        rule=SQL,
+    )
+
+
+def test_request_parameter_needs_the_framework_import(check):
+    # same code without importing django: `request` is just a parameter
+    check("import sqlite3\ncur = sqlite3.connect('x').cursor()\ndef search(request):\n    cur.execute(request.GET['n'])\n", rule=SQL)
+
+
+def test_drf_and_aiohttp_requests(check):
+    check(
+        """
+import os, subprocess
+from rest_framework.views import APIView
+
+class Upload(APIView):
+    def post(self, request):
+        subprocess.run("convert " + request.data["file"], shell=True)  # SINK
+        subprocess.run("ls " + request.query_params.get("d"), shell=True)  # SINK
+""",
+        rule=CMD,
+    )
+    check(
+        """
+import os
+from aiohttp import web
+
+async def handler(request):
+    os.system("ping " + request.query["host"])  # SINK
+    data = await request.post()
+    os.system("echo " + data["msg"])  # SINK
+""",
+        rule=CMD,
+    )
+
+
+def test_annotated_request_parameter(check):
+    check(
+        """
+import os
+from starlette.requests import Request
+
+async def hook(request: Request):
+    payload = await request.json()
+    os.system("notify " + payload["channel"])  # SINK
+""",
+        rule=CMD,
+    )
+
+
+def test_django_xss_sinks_and_sanitizers(check):
+    check(
+        """
+from django.utils.html import escape, format_html
+from django.utils.safestring import mark_safe
+
+def view(request):
+    q = request.GET.get("q", "")
+    mark_safe("<b>" + q + "</b>")  # SINK
+    mark_safe("<b>" + escape(q) + "</b>")
+    format_html("<b>{}</b>", q)
+    format_html("<b>" + q + "</b>")  # SINK
+""",
+        rule=XSS,
+    )

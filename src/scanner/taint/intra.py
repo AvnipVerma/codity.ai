@@ -207,6 +207,9 @@ class FunctionAnalyzer:
                 else:
                     state.aliases[p.name] = frozenset({Ref(PATH, cls.qualname)})
                 continue
+            typed = self.parameter_type(p)
+            if typed:
+                state.aliases[p.name] = typed
             origin = ParamOrigin(fn.qualname, p.key, p.name)
             step = PathStep(
                 self.mod.location(p.node),
@@ -219,6 +222,28 @@ class FunctionAnalyzer:
                 tv = self.eval(p.default, State())
                 if tv:
                     self.defaults[p.key] = tv
+
+    def parameter_type(self, p) -> frozenset:
+        """Instance reference for a parameter whose type we know.
+
+        From its annotation (``request: HttpRequest``) or, for frameworks that
+        inject untyped parameters, from the rules' ``typed_parameters``.
+        """
+        ann = p.node.annotation
+        if ann is not None:
+            if isinstance(ann, ast.Subscript) and isinstance(ann.slice, (ast.Name, ast.Attribute)):
+                ann = ann.slice  # Optional[HttpRequest]
+            out = set()
+            for r in self.res.refs_for(ann, self.res.module_lookup, self.classes):
+                if r.kind == PATH and not r.name.startswith(("builtins.", "typing.")):
+                    cls = self.classes(r.name)
+                    out.add(Ref(INST, cls) if cls else Ref(RET, r.name))
+            if out:
+                return frozenset(out)
+        for tp in self.rules.typed_parameters:
+            if tp.name == p.name and self.prog.module_imports_any(self.mod, tp.module_imports):
+                return frozenset({Ref(RET, tp.type)})
+        return NO_REFS
 
     def return_step(self, node: ast.AST) -> PathStep:
         return PathStep(self.mod.location(node), StepKind.RETURN, f"returned from `{self.fn.display}()`")

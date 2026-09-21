@@ -13,7 +13,7 @@
     {"file": "vulnerable/sqli_sqlalchemy_text.py", "expected": [{"rule_id": "py.sql-injection", "line": 12, "snippet": "text(f\"SELECT"}]},
     {"file": "vulnerable/sqli_cli_script.py", "expected": [{"rule_id": "py.sql-injection", "line": 9, "snippet": "conn.executescript("}]},
     {"file": "vulnerable/sqli_django_view.py", "expected": [{"rule_id": "py.sql-injection", "line": 9, "snippet": "cursor.execute("}],
-     "note": "Django injects `request` as a view parameter; framework parameters are not modelled as sources. Expected false negative."},
+     "note": "Django injects `request` as a view parameter. Written as an expected false negative; found since rules gained typed_parameters (label unchanged)."},
     {"file": "vulnerable/shop/__init__.py", "expected": []},
     {"file": "vulnerable/shop/repository.py", "expected": [{"rule_id": "py.sql-injection", "line": 8, "snippet": "_conn.execute(sql)"}],
      "note": "The source is in shop/views.py; the parameterized query on line 12 is safe."},
@@ -55,6 +55,12 @@
       {"rule_id": "py.sql-injection", "line": 14, "snippet": "conn.execute(\"SELECT * FROM \" + table)"},
       {"rule_id": "py.command-injection", "line": 15, "snippet": "os.system("},
       {"rule_id": "py.sql-injection", "line": 23, "snippet": "INSERT INTO audit"}]},
+
+    {"file": "vulnerable/django_sqli_raw.py", "expected": [{"rule_id": "py.sql-injection", "line": 12, "snippet": "Person.objects.raw("}]},
+    {"file": "vulnerable/django_cmd_class_view.py", "expected": [{"rule_id": "py.command-injection", "line": 10, "snippet": "subprocess.run(f\"ping"}]},
+    {"file": "vulnerable/drf_upload_path.py", "expected": [{"rule_id": "py.path-traversal", "line": 13, "snippet": "open(destination"}]},
+    {"file": "vulnerable/django_xss_mark_safe.py", "expected": [{"rule_id": "py.xss-template", "line": 7, "snippet": "mark_safe("}]},
+    {"file": "vulnerable/aiohttp_ssrf_proxy.py", "expected": [{"rule_id": "py.ssrf", "line": 8, "snippet": "session.get(target)"}]},
 
     {"file": "safe/sqli_param_tuple.py", "expected": []},
     {"file": "safe/sqli_param_named.py", "expected": []},
@@ -98,6 +104,12 @@
     {"file": "safe/secret_from_environment.py", "expected": []},
     {"file": "safe/secret_lookalike_names.py", "expected": []},
     {"file": "safe/secret_public_values.py", "expected": [],
-     "note": "A Stripe publishable key is public by design but looks exactly like a secret. Expected false positive."}
+     "note": "A Stripe publishable key is public by design but looks exactly like a secret. Expected false positive."},
+    {"file": "safe/django_orm_filter.py", "expected": []},
+    {"file": "safe/django_cursor_params.py", "expected": []},
+    {"file": "safe/django_format_html.py", "expected": []},
+    {"file": "safe/drf_int_pagination.py", "expected": []},
+    {"file": "safe/outgoing_request_helper.py", "expected": [],
+     "note": "The parameter is called `request`, but the module does not use a web framework, so it is not a source."}
   ]
 }
