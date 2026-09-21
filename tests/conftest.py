@@ -57,3 +57,24 @@ def hits(result, rule_id: str | None = None) -> list[tuple[str, str, int]]:
         for f in result.findings
         if rule_id is None or f.rule_id == rule_id
     ]
+
+
+def marked_lines(code: str, marker: str = "# SINK") -> list[int]:
+    lines = textwrap.dedent(code).lstrip("\n").splitlines()
+    return [i + 1 for i, line in enumerate(lines) if marker in line]
+
+
+@pytest.fixture
+def check(run_scan):
+    """Scan one snippet; assert findings of ``rule`` are exactly the ``# SINK`` lines."""
+
+    def _check(code: str, rule: str = "py.sql-injection", files: dict | None = None, target: str = "app.py"):
+        tree = dict(files or {})
+        tree[target] = code
+        result = run_scan(tree)
+        assert result.diagnostics == [], [d.render() for d in result.diagnostics]
+        got = sorted(f.location.line for f in result.findings if f.rule_id == rule and f.location.file == target)
+        assert got == marked_lines(code), f"expected {marked_lines(code)}, got {got}"
+        return result
+
+    return _check
