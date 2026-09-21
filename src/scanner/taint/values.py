@@ -98,10 +98,6 @@ def extend(path: Path, *steps: PathStep) -> Path:
     return path
 
 
-def concat(first: Path, second: Path) -> Path:
-    return extend(first, *second) if second else first
-
-
 class TaintValue:
     """Immutable set of facts ``{(origin, rules): path}``."""
 

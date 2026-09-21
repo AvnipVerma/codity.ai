@@ -682,17 +682,3 @@ def _short(text: str, limit: int = 32) -> str:
     if dot and len(tail) < limit - 2:
         return "…." + tail
     return text[: limit - 1] + "…"
-
-
-def _body_nodes(fi: FunctionInfo):
-    """Nodes of a function body, not descending into nested functions/classes."""
-    if fi.kind == "lambda":
-        stack = [fi.node.body]
-    else:
-        stack = list(fi.node.body)
-    while stack:
-        node = stack.pop()
-        yield node
-        for child in ast.iter_child_nodes(node):
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                stack.append(child)

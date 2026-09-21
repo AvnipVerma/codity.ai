@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_p = sub.add_parser("scan", help="scan a target and report findings")
     common(scan_p)
-    scan_p.add_argument("--format", choices=("table", "sarif", "html"), default="table")
+    scan_p.add_argument("--format", choices=("table", "sarif"), default="table")
     scan_p.add_argument(
         "--fail-on",
         choices=SEVERITY_NAMES,
@@ -180,12 +180,6 @@ def main(argv: list[str] | None = None) -> int:
         _write(render_sarif(result), args.output)
         if not args.quiet:
             _stderr(timing)
-    elif args.format == "html":
-        from .output.html import render_html
-
-        _write(render_html(result), args.output)
-        if not args.quiet:
-            _stderr(timing)
     else:
         from .output.table import UNICODE, render_table
 
@@ -205,10 +199,6 @@ def main(argv: list[str] | None = None) -> int:
         if not to_tty and not args.quiet:
             _stderr(timing)
     return _exit_code(result, args.fail_on)
-
-
-def entry() -> None:  # pragma: no cover
-    sys.exit(main())
 
 
 if __name__ == "__main__":  # pragma: no cover
