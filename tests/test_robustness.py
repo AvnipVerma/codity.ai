@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 
@@ -117,3 +118,30 @@ def test_python_syntax_warnings_are_not_printed(tmp_path, repo_rules, capfd):
     result = scan(str(tmp_path), repo_rules, ScanOptions())
     assert result.diagnostics == []
     assert "SyntaxWarning" not in capfd.readouterr().err
+
+
+def test_growing_alias_chain_in_nested_loops_converges(tmp_path, repo_rules):
+    # h = h.set(...) would otherwise invent a longer name (X.set.set...) every pass
+    code = (
+        "from lib import hamt\n\ndef stress(n):\n    h = hamt()\n"
+        "    for a in range(n):\n        for b in range(n):\n            for c in range(n):\n"
+        "                h = h.set(a, b).set(b, c)\n                h = h.delete(c)\n    return h\n"
+    )
+    write_tree(tmp_path, {"stress.py": code})
+    started = time.perf_counter()
+    result = scan(str(tmp_path), repo_rules, ScanOptions())
+    assert result.diagnostics == []
+    assert time.perf_counter() - started < 5
+
+
+def test_large_class_hierarchy_stays_fast(tmp_path, repo_rules):
+    classes = "\n".join(
+        f"class Case{i}(Base):\n    def setUp(self):\n        self.value{i} = {i}\n"
+        f"    def test(self):\n        return self.value{i} + self.shared\n"
+        for i in range(300)
+    )
+    code = "class Base:\n    def __init__(self):\n        self.shared = 1\n\n" + classes
+    write_tree(tmp_path, {"cases.py": code})
+    started = time.perf_counter()
+    scan(str(tmp_path), repo_rules, ScanOptions())
+    assert time.perf_counter() - started < 10

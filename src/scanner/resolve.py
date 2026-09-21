@@ -53,6 +53,10 @@ class Ref:
 
 
 NO_REFS: frozenset[Ref] = frozenset()
+# Names derived from calls and attributes (h = h.set(...) in a loop would build
+# X.set.set.set...) are dropped beyond this many segments, so alias states stay
+# finite and loop fixpoints converge. Real API names are far shorter.
+MAX_SEGMENTS = 8
 Lookup = Callable[[str], "frozenset[Ref] | None"]
 ClassOracle = Callable[[str], "str | None"]
 
@@ -260,6 +264,8 @@ def attr_refs(base: Iterable[Ref], attr: str) -> frozenset[Ref]:
     """
     out = set()
     for r in base:
+        if r.name.count(".") + 1 >= MAX_SEGMENTS:
+            continue
         if r.kind == PATH:
             out.add(Ref(PATH, f"{r.name}.{attr}"))
         elif r.kind in (INST, RET, BOUND):

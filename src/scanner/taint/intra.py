@@ -194,11 +194,10 @@ class FunctionAnalyzer:
                 if fn.method_kind == "instance":
                     self.self_name = p.name
                     state.aliases[p.name] = frozenset({Ref(INST, cls.qualname)})
-                    fam = self.prog.family(cls)
-                    self.deps.add(("fld", fam))
                     fields = {}
                     loc = self.mod.location(p.node)
-                    for sels, tv in self.prog.fields.get(fam, {}).items():
+                    visible = self.prog.read_fields(cls, fn.self_attrs, self.deps)
+                    for sels, tv in visible.items():
                         if tv:
                             where = p.name + "".join(sels)
                             step = PathStep(loc, StepKind.STEP, f"read from `{where}` in `{fn.display}()`", var=where)
@@ -368,9 +367,8 @@ class FunctionAnalyzer:
                 cls = self.prog.classes.get(r.name)
                 if cls is None:
                     continue
-                fam = self.prog.family(cls)
-                self.deps.add(("fld", fam))
-                store = self.prog.fields.get(fam)
+                attrs = {sels[0][1:]} if sels and sels[0].startswith(".") else None
+                store = self.prog.read_fields(cls, attrs, self.deps)
                 if store:
                     out = out.join(VarVal(EMPTY, store).read(sels))
         return out

@@ -234,6 +234,13 @@ Windows 11, Python 3.13.3. The scanner runs single-threaded.
 | Same project, before the optimisation pass | 500 | 153,198 | 50.2s |
 | Labelled corpus | 90 | 1,264 | 0.19s |
 | pallets/flask | 83 | 18,345 | 1.06s |
+| CPython 3.13 standard library (`Lib/`, stress test) | 1,742 | 901,192 | 120.2s |
+
+The standard-library run is a robustness and scaling check, not part of the
+budget. It finishes with 4 warnings, all deliberately undecodable or invalid
+test files in CPython's own test suite, and no internal errors. It also
+exposed three scaling bugs, fixed before these numbers were taken (README.md,
+"Performance").
 
 Inside pytest (`pytest -m slow`), the same 500-file scan measured 25.8s,
 because Windows Defender also scans the freshly generated files. The budget

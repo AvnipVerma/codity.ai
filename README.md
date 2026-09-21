@@ -355,8 +355,26 @@ working version took 50.2 s; what brought it down:
   for clean values, and forced secret formats are pre-filtered by their
   literal prefix before `fnmatch`.
 
-Output is byte-identical before and after these changes on the benchmark
-project. Findings are sorted by a total key, all hashing is sha256, output is
+**Scaling fixes found on CPython's standard library.** The stdlib is 1,742
+files and 901k lines, including thousands of `unittest.TestCase` subclasses.
+The first attempt to scan it did not finish in 10 minutes; it now takes 120 s
+(no internal errors). Three fixes:
+
+* **Per-class field stores.** Self-field stores are per class. A method sees
+  its class, its ancestors and its descendants (at most 64), and seeds only
+  the `self.<attr>` names it uses. Previously every class sharing a base
+  shared one store: every TestCase method copied every test's fields, and
+  each field write re-queued all of them.
+* **Re-analysis only on new facts.** Dependents are re-analysed only when
+  facts are added, not when an existing fact gets a shorter route. Field and
+  global driven re-analysis waits until summary-driven work is done, so many
+  callers' contributions are absorbed at once.
+* **A cap on derived names.** `h = h.set(...)` in a loop built ever-longer
+  derived names (`X.set.set...`), so loop fixpoints never converged. Such
+  names are capped at 8 segments.
+
+Output is byte-identical before and after all of these changes on the
+benchmark project, and the public-repository findings are unchanged. Findings are sorted by a total key, all hashing is sha256, output is
 written as UTF-8 bytes with `\n`, and a test runs the CLI under three
 `PYTHONHASHSEED` values and compares the bytes.
 

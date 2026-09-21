@@ -299,3 +299,39 @@ def test_same_sink_from_two_call_sites_gives_two_findings(run_scan):
     )
     assert len(result.findings) == 2
     assert len({f.location for f in result.findings}) == 1
+
+
+def test_sibling_classes_do_not_share_self_fields(check):
+    check(
+        H
+        + """
+class Base:
+    pass
+
+class Writer(Base):
+    def load(self):
+        self.q = request.args['q']
+
+class Reader(Base):
+    def run(self):
+        cur.execute(self.q)
+"""
+    )
+
+
+def test_base_method_sees_field_set_by_subclass(check):
+    check(
+        H
+        + """
+class Base:
+    def run(self):
+        cur.execute(self.q)  # SINK
+
+class Child(Base):
+    def __init__(self, q):
+        self.q = q
+
+def view():
+    Child(request.args['q']).run()
+"""
+    )

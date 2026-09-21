@@ -120,3 +120,16 @@ DECISIONS.md yourself.
     clean-clone check: a source text containing dots inside a literal was
     abbreviated at the last dot (`….1')`). Only identifier tails are
     abbreviated now; regression test added.
+
+22. **The scanner did not scale to CPython's stdlib (post-DoD stress test).**
+    Three bugs, all invisible on the 500-file benchmark: (a) class "families"
+    (a union-find over inheritance) merged every `unittest.TestCase` subclass
+    into one field store, so a 5-line test method took 4.3s and every field
+    write re-queued thousands of methods; (b) any change to a summary or field
+    re-queued dependents, even if only a route got shorter; (c) the
+    `requests.Session().get` naming feature let `h = h.set(...)` in a loop
+    create unboundedly long names, so loop fixpoints never converged. Fixed
+    with per-class stores (+ ancestors/descendants), key-only change
+    detection with a tiered worklist, and a name-length cap. Stdlib: did not
+    finish in 10 min -> 120s. Benchmark output byte-identical, public-repo
+    findings unchanged. Tried `gc.freeze()` too: no measurable gain, reverted.

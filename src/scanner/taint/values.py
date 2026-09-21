@@ -169,6 +169,10 @@ class TaintValue:
     def items(self):
         return self.facts.items()
 
+    def keys(self) -> frozenset:
+        """The facts without their routes: what changes a result, not how it reads."""
+        return frozenset(self.facts)
+
 
 EMPTY = TaintValue()
 
@@ -284,6 +288,9 @@ class VarVal:
 
     def without_rules(self, rules: frozenset) -> "VarVal":
         return VarVal(self.own.without_rules(rules), {k: v.without_rules(rules) for k, v in self.fields.items()})
+
+    def keys(self) -> tuple:
+        return (self.own.keys(), frozenset((k, v.keys()) for k, v in self.fields.items()))
 
     def concrete(self) -> "VarVal":
         own = self.own.concrete()

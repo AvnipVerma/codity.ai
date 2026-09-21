@@ -25,6 +25,7 @@ import ast
 import heapq
 from collections import Counter
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from ..model import Finding, PathStep, StepKind
 from ..resolve import BOUND, INST, PATH, RET, Ref
@@ -35,6 +36,11 @@ from .summaries import BOTTOM, Summary
 from .values import SourceSite, TaintValue, VarVal, better
 
 MAX_VISITS = 40
+# A method sees self-fields written in its own class, its ancestors, and its
+# descendants (template-method pattern). Classes with more descendants than
+# this (unittest.TestCase when the stdlib is scanned) skip the descendants,
+# otherwise every subclass would share one store.
+MAX_DESCENDANTS = 64
 
 
 @dataclass(slots=True)
@@ -58,16 +64,24 @@ def _decorator_names(node: ast.AST) -> set[str]:
     return out
 
 
-def scope_facts(body: list, params: list[str]):
-    """Names bound in a function body (Python's scoping rules, simplified).
+class Scope(NamedTuple):
+    locals: frozenset
+    globals: frozenset
+    nonlocals: frozenset
+    has_nested: bool
+    # locals assigned exactly once, to a literal collection of constants, and
+    # never mutated in place
+    const_collections: frozenset
+    # call nodes of this scope (for ordering the fixpoint)
+    calls: list
+    # locals assigned exactly once to a string built from literals
+    const_strings: dict
+    # attribute names used on `self` (when self_name is given)
+    self_attrs: frozenset
 
-    Returns ``(locals, globals, nonlocals, has_nested, const_collections,
-    calls, const_strings)``. ``const_collections`` are locals assigned exactly
-    once, to a literal collection of constants, and never mutated in place;
-    ``calls`` are the call nodes of this scope (for ordering the fixpoint);
-    ``const_strings`` maps locals assigned exactly once to a string literal to
-    that string.
-    """
+
+def scope_facts(body: list, params: list[str], self_name: str | None = None) -> Scope:
+    """Names bound in a function body (Python's scoping rules, simplified)."""
     local = set(params)
     globals_: set[str] = set()
     nonlocals: set[str] = set()
@@ -77,6 +91,7 @@ def scope_facts(body: list, params: list[str]):
     mutated: set[str] = set()
     calls: list[ast.Call] = []
     strings: dict[str, str] = {}
+    self_attrs: set[str] = set()
     stack = list(body)
     while stack:
         node = stack.pop()
@@ -116,6 +131,10 @@ def scope_facts(body: list, params: list[str]):
                 local.add(node.id)
                 stores[node.id] += 1
             continue
+        if t is ast.Attribute and self_name is not None:
+            value = node.value
+            if value.__class__ is ast.Name and value.id == self_name:
+                self_attrs.add(node.attr)
         if t in (ast.Import, ast.ImportFrom):
             for alias in node.names:
                 if alias.name != "*":
@@ -163,7 +182,10 @@ def scope_facts(body: list, params: list[str]):
         text = constant_string(value, const_strings)
         if text is not None:
             const_strings[name] = text
-    return frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts, calls, const_strings
+    return Scope(
+        frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts, calls, const_strings,
+        frozenset(self_attrs),
+    )
 
 
 class ClassInfo:
@@ -172,11 +194,12 @@ class ClassInfo:
         self.module = module
         self.node = node
         self.methods: dict[str, FunctionInfo] = {}
-        consts = scope_facts(
+        self.const_attrs = scope_facts(
             [s for s in node.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], []
-        )[4]
-        self.const_attrs = consts
+        ).const_collections
         self.bases: list[ClassInfo] | None = None
+        self.children: list[ClassInfo] = []
+        self._related: list[ClassInfo] | None = None
 
 
 class FunctionInfo:
@@ -208,14 +231,16 @@ class FunctionInfo:
             body = [node.body]
         else:
             body = node.body
-        local, globs, nonloc, has_nested, consts, calls, strings = scope_facts(body, [p.name for p in self.params])
-        self.calls = calls
-        self.const_strings = strings
-        self.local_names = local
-        self.global_decls = globs
-        self.nonlocal_decls = nonloc
-        self.has_nested = has_nested and kind != "module"
-        self.const_collections = consts
+        self_name = self.params[0].name if self.params and self.params[0].implicit and method_kind == "instance" else None
+        scope = scope_facts(body, [p.name for p in self.params], self_name)
+        self.calls = scope.calls
+        self.const_strings = scope.const_strings
+        self.self_attrs = scope.self_attrs  # attribute names used on `self`
+        self.local_names = scope.locals
+        self.global_decls = scope.globals
+        self.nonlocal_decls = scope.nonlocals
+        self.has_nested = scope.has_nested and kind != "module"
+        self.const_collections = scope.const_collections
         self.positional = [p for p in self.params if p.kind == "pos"]
         self.named = [p for p in self.params if p.kind in ("pos", "kwonly")]
         self.by_name = {p.name: p for p in self.named}
@@ -352,7 +377,7 @@ class TaintProgram:
 
     def _module_consts(self, mod) -> frozenset:
         body = [s for s in mod.tree.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-        consts = scope_facts(body, [])[4]
+        consts = scope_facts(body, []).const_collections
         # a function mutating the collection (ALLOWED.add(x)) disqualifies it
         mutated = self.module_consts_mutated = set()
         for node in mod.nodes:
@@ -484,23 +509,49 @@ class TaintProgram:
         return None
 
     def _build_families(self) -> None:
-        parent: dict[str, str] = {q: q for q in self.classes}
-
-        def find(q: str) -> str:
-            while parent[q] != q:
-                parent[q] = parent[parent[q]]
-                q = parent[q]
-            return q
-
-        for q, cls in sorted(self.classes.items()):
+        for q in sorted(self.classes):
+            cls = self.classes[q]
             for base in cls.bases or ():
-                a, b = find(q), find(base.qualname)
-                if a != b:
-                    parent[max(a, b)] = min(a, b)
-        self._family = {q: find(q) for q in self.classes}
+                base.children.append(cls)
 
     def family(self, cls: ClassInfo) -> str:
-        return self._family.get(cls.qualname, cls.qualname)
+        """Key of the field store a method of ``cls`` writes ``self.x`` into."""
+        return cls.qualname
+
+    def related(self, cls: ClassInfo) -> list[ClassInfo]:
+        """Classes whose self-field stores a method of ``cls`` may read."""
+        if cls._related is None:
+            out = self.mro(cls)
+            descendants: list[ClassInfo] = []
+            stack = list(cls.children)
+            while stack and len(descendants) <= MAX_DESCENDANTS:
+                c = stack.pop()
+                if c not in descendants and c not in out:
+                    descendants.append(c)
+                    stack.extend(c.children)
+            if len(descendants) <= MAX_DESCENDANTS:
+                out = out + sorted(descendants, key=lambda c: c.qualname)
+            cls._related = out
+        return cls._related
+
+    def read_fields(self, cls: ClassInfo, attrs, deps: set) -> dict:
+        """Merged self-field taint visible to methods of ``cls``.
+
+        ``attrs`` limits the result to fields whose first attribute is named
+        in it (the attributes the method actually touches); None means all.
+        """
+        merged: dict = {}
+        for c in self.related(cls):
+            deps.add(("fld", c.qualname))
+            store = self.fields.get(c.qualname)
+            if not store:
+                continue
+            for sels, tv in store.items():
+                if attrs is not None and sels[0][1:] not in attrs:
+                    continue
+                cur = merged.get(sels)
+                merged[sels] = tv if cur is None else cur.join(tv)
+        return merged
 
     # ---------------------------------------------------------- resolution
 
@@ -562,7 +613,8 @@ class TaintProgram:
         new = tv if cur is None else cur.join(tv)
         if cur is None or new != cur:
             store[sels] = new
-            self.dirty.add(("fld", family))
+            if cur is None or new.keys() != cur.keys():  # a shorter route alone re-queues nobody
+                self.dirty.add(("fld", family))
 
     def contribute_global(self, module: str, name: str, vv: VarVal) -> None:
         key = (module, name)
@@ -570,7 +622,8 @@ class TaintProgram:
         new = vv if cur is None else cur.join(vv)
         if cur is None or new != cur:
             self.globals[key] = new
-            self.dirty.add(("glb", module, name))
+            if cur is None or new.keys() != cur.keys():
+                self.dirty.add(("glb", module, name))
 
     # ------------------------------------------------------------- fixpoint
 
@@ -610,12 +663,16 @@ class TaintProgram:
     def run(self) -> None:
         self.build()
         order = self._order()
-        heap = [(order[q], q) for q in self.functions]
+        # Tier 0: initial pass and re-analysis because a callee summary changed.
+        # Tier 1: re-analysis because a class field / module global / closure
+        # gained facts. Tier 1 waits until tier 0 is exhausted, so contributions
+        # from many callers are absorbed in one re-analysis instead of one each.
+        heap = [(0, order[q], q) for q in self.functions]
         heapq.heapify(heap)
         queued = set(self.functions)
         visits: Counter = Counter()
         while heap:
-            _, q = heapq.heappop(heap)
+            _, _, q = heapq.heappop(heap)
             queued.discard(q)
             fi = self.functions[q]
             visits[q] += 1
@@ -632,14 +689,17 @@ class TaintProgram:
             for dep in analyzer.deps:
                 self.deps.setdefault(dep, set()).add(q)
             self.fn_findings[q] = analyzer.findings
-            if summary != self.summaries.get(q, BOTTOM):
+            old = self.summaries.get(q, BOTTOM)
+            if summary != old:
                 self.summaries[q] = summary
-                self.dirty.add(("sum", q))
-            for key in self.dirty:
-                for dependent in self.deps.get(key, ()):
+                if summary.shape() != old.shape():
+                    self.dirty.add(("sum", q))
+            for key in sorted(self.dirty):
+                tier = 0 if key[0] == "sum" else 1
+                for dependent in sorted(self.deps.get(key, ())):
                     if dependent not in queued:
                         queued.add(dependent)
-                        heapq.heappush(heap, (order.get(dependent, 0), dependent))
+                        heapq.heappush(heap, (tier, order.get(dependent, 0), dependent))
         self._finalize()
 
     # ------------------------------------------------------------ findings

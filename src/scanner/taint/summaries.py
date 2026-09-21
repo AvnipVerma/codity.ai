@@ -70,5 +70,20 @@ class Summary:
 
     __hash__ = None  # type: ignore[assignment]
 
+    def shape(self) -> tuple:
+        """Everything callers depend on, ignoring routes.
+
+        Callers are re-analysed only when this changes; a shorter route for an
+        existing fact is kept but does not trigger re-analysis.
+        """
+        return (
+            self.ret.keys(),
+            frozenset(self.hits),
+            frozenset((k, v.keys()) for k, v in self.self_writes.items()),
+            frozenset((k, v.keys()) for k, v in self.defaults.items()),
+            frozenset((k, v.keys()) for k, v in self.closure.items()),
+            frozenset(self.closure_aliases.items()),
+        )
+
 
 BOTTOM = Summary()
