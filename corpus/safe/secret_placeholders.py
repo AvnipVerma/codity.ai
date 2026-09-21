@@ -1,0 +1,10 @@
+"""Example settings: every credential here is a placeholder."""
+
+API_KEY = ""
+SECRET_KEY = "changeme"
+STRIPE_SECRET_KEY = "your-stripe-secret-key-here"
+SLACK_TOKEN = "<slack-bot-token>"
+GITHUB_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+DB_PASSWORD = "${DB_PASSWORD}"
+MAIL_PASSWORD = "{{ mail_password }}"
+REDIS_PASSWORD = "replace-me-in-production"
