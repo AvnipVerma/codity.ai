@@ -1,0 +1,228 @@
+"""The shipped rules.yaml, one class at a time, against real library APIs."""
+
+H = "import os, sys, subprocess, pickle, yaml, requests, sqlite3\nfrom flask import request\n"
+
+SQL, CMD, PATH, SSRF, XSS, DESER = (
+    "py.sql-injection",
+    "py.command-injection",
+    "py.path-traversal",
+    "py.ssrf",
+    "py.xss-template",
+    "py.insecure-deserialization",
+)
+
+
+def test_sql_injection_sinks(check):
+    check(
+        H
+        + """
+import sqlalchemy, pandas
+from sqlalchemy import text
+conn = sqlite3.connect('db')
+
+def view(engine, Model):
+    q = request.args['q']
+    conn.execute(f"SELECT * FROM t WHERE a = '{q}'")  # SINK
+    conn.executemany("INSERT INTO t VALUES ('%s')" % q, [])  # SINK
+    conn.executescript('DROP TABLE ' + q)  # SINK
+    engine.execute(text('SELECT * FROM t WHERE a = ' + q))  # SINK
+    Model.objects.raw('SELECT * FROM app_model WHERE a = ' + q)  # SINK
+    pandas.read_sql('SELECT * FROM t WHERE a = ' + q, conn)  # SINK
+    conn.execute('SELECT * FROM t WHERE a = ?', (q,))
+    engine.execute(text('SELECT * FROM t WHERE a = :a'), {'a': q})
+""",
+        rule=SQL,
+    )
+
+
+def test_sql_injection_process_sources(check):
+    check(
+        H
+        + "conn = sqlite3.connect('db')\n"
+        + "conn.execute('SELECT * FROM t WHERE a = ' + sys.argv[1])  # SINK\n"
+        + "conn.execute('SELECT * FROM t WHERE a = ' + input())  # SINK\n"
+        + "conn.execute('SELECT * FROM t WHERE a = ' + os.environ.get('X'))  # SINK\n",
+        rule=SQL,
+    )
+
+
+def test_command_injection_sinks(check):
+    check(
+        H
+        + """
+import shlex
+from subprocess import Popen, check_output
+
+def view(flag):
+    c = request.args['c']
+    os.system('ping ' + c)  # SINK
+    os.popen('ls ' + c)  # SINK
+    subprocess.run('ls ' + c, shell=True)  # SINK
+    subprocess.call(f'ls {c}', shell=True)  # SINK
+    check_output('ls ' + c, shell=True)  # SINK
+    Popen('ls ' + c, shell=flag)  # SINK
+    subprocess.getoutput('ls ' + c)  # SINK
+    eval(c)  # SINK
+    exec(c)  # SINK
+    os.execvp('ls', ['ls', c])  # SINK
+    subprocess.run(['ls', c])
+    subprocess.run('ls ' + c, shell=False)
+    subprocess.run(['ls', c], shell=False)
+    os.system('ls ' + shlex.quote(c))
+    subprocess.run('ls ' + shlex.quote(c), shell=True)
+""",
+        rule=CMD,
+    )
+
+
+def test_path_traversal_sinks(check):
+    check(
+        H
+        + """
+import shutil, pathlib
+from pathlib import Path
+from flask import send_file
+from werkzeug.utils import secure_filename
+BASE = '/srv/uploads'
+
+def view():
+    name = request.args['name']
+    open(os.path.join(BASE, name))  # SINK
+    send_file(BASE + '/' + name)  # SINK
+    Path(name)  # SINK
+    (Path(BASE) / name).read_text()  # SINK
+    os.remove(os.path.join(BASE, name))  # SINK
+    shutil.rmtree(name)  # SINK
+    open(os.path.join(BASE, secure_filename(name)))
+    open(os.path.join(BASE, os.path.basename(name)))
+    open(os.environ['CONFIG_PATH'])
+    open(os.path.join(BASE, 'fixed.txt'))
+""",
+        rule=PATH,
+    )
+
+
+def test_ssrf_sinks(check):
+    check(
+        H
+        + """
+import httpx, urllib.request
+from urllib.request import urlopen
+
+def view():
+    url = request.args['url']
+    requests.get(url)  # SINK
+    requests.post(url, data={})  # SINK
+    requests.request('GET', url)  # SINK
+    urlopen(url)  # SINK
+    urllib.request.Request(url)  # SINK
+    httpx.get(url=url)  # SINK
+    requests.get('https://api.example.com/search', params={'q': url})
+    requests.request(url, 'https://api.example.com/')
+    requests.get(sys.argv[1])
+""",
+        rule=SSRF,
+    )
+
+
+def test_xss_template_sinks(check):
+    check(
+        H
+        + """
+import jinja2, html
+from flask import render_template_string, render_template
+from markupsafe import Markup, escape
+
+def view():
+    name = request.args['name']
+    render_template_string('<h1>Hello ' + name + '</h1>')  # SINK
+    Markup('<b>%s</b>' % name)  # SINK
+    jinja2.Template('Hello ' + name).render()  # SINK
+    render_template_string('<h1>Hello {{ name }}</h1>', name=name)
+    render_template('hello.html', name=name)
+    Markup('<b>%s</b>' % escape(name))
+    render_template_string('<p>' + html.escape(name) + '</p>')
+""",
+        rule=XSS,
+    )
+
+
+def test_insecure_deserialization_sinks(check):
+    check(
+        H
+        + """
+import base64, json, marshal, jsonpickle
+
+def view():
+    blob = request.get_data()
+    pickle.loads(blob)  # SINK
+    pickle.loads(base64.b64decode(request.cookies.get('session')))  # SINK
+    marshal.loads(blob)  # SINK
+    jsonpickle.decode(blob)  # SINK
+    yaml.load(blob)  # SINK
+    yaml.load(blob, Loader=yaml.Loader)  # SINK
+    yaml.unsafe_load(blob)  # SINK
+    yaml.full_load(blob)  # SINK
+    yaml.safe_load(blob)
+    yaml.load(blob, Loader=yaml.SafeLoader)
+    yaml.load(blob, yaml.SafeLoader)
+    json.loads(blob)
+    pickle.loads(open('model.pkl', 'rb').read())
+""",
+        rule=DESER,
+    )
+
+
+def test_request_files_upload_to_pickle(check):
+    check(H + "def view():\n    pickle.load(request.files['model'])  # SINK\n    pickle.loads(request.files['model'].read())  # SINK\n", rule=DESER)
+
+
+# ---------------------------------------------------------------- resolution
+
+
+def test_flow_sensitive_alias_of_request(check):
+    check("import os\nfrom flask import request\ndef f():\n    r = request\n    os.system(r.args.get('c'))  # SINK\n", rule=CMD)
+
+
+def test_import_inside_function(check):
+    check("def f():\n    from flask import request\n    import os as o\n    o.system(request.args['c'])  # SINK\n", rule=CMD)
+
+
+def test_aliased_module_and_function_imports(check):
+    check(
+        "import subprocess as sp\nfrom os import system as run_cmd\nfrom flask import request as req\n"
+        "def f():\n    sp.run(req.form['c'], shell=True)  # SINK\n    run_cmd(req.form['c'])  # SINK\n",
+        rule=CMD,
+    )
+
+
+def test_shadowed_builtin_is_not_a_sink(check):
+    check("from flask import request\ndef open(p):\n    return p\n\ndef f():\n    open(request.args['p'])\n", rule=PATH)
+
+
+def test_shadowing_parameter_is_not_a_source(check):
+    check("import os\nfrom flask import request\ndef f(request):\n    os.system(request.args['c'])\n", rule=CMD)
+
+
+def test_conditional_import_candidates(check):
+    check(
+        "from flask import request\ntry:\n    import cPickle as pickle\nexcept ImportError:\n    import pickle\n"
+        "def f():\n    pickle.loads(request.data)  # SINK\n",
+        rule=DESER,
+    )
+
+
+def test_getattr_with_constant_name(check):
+    check("import os\nfrom flask import request\ndef f():\n    getattr(os, 'system')(request.args['c'])  # SINK\n", rule=CMD)
+
+
+def test_unknown_receiver_matches_wildcard_sink(check):
+    # executor's type is unknown, so `*.execute` matches: a documented false positive
+    check("from flask import request\ndef f(executor):\n    executor.execute(request.args['task'])  # SINK\n", rule=SQL)
+
+
+def test_sink_keyword_equivalents(check):
+    check(
+        H + "def f():\n    requests.get(url=request.args['u'])  # SINK\n    subprocess.run(args='ls ' + request.args['c'], shell=True)\n",
+        rule=SSRF,
+    )

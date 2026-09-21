@@ -953,12 +953,13 @@ class FunctionAnalyzer:
             names.append((UNKNOWN, func.attr))
 
         src = san = ()
+        fired: set = set()
         if names:
             for _, spec in self.rules.sinks.match(names):
                 if self.when_holds(spec, node, state):
                     tv = self.sink_argument(spec, pos, kws, recv)
-                    if tv:
-                        self.report(spec, tv, node, func)
+                    if tv and self.report(spec, tv, node, func):
+                        fired.add(spec.rule_id)
             src = self.rules.sources.match(names)
             san = self.rules.sanitizers.match(names)
 
@@ -971,6 +972,10 @@ class FunctionAnalyzer:
             ret = self.library_call(node, func, names, pos, kws, recv, state)
         if san:
             ret = ret.without_rules(frozenset(r for _, r in san))
+        if fired:
+            # A sink consumes its rule's taint: `execute(text(q))` is one
+            # vulnerability, reported at the inner sink only.
+            ret = ret.without_rules(frozenset(fired))
         return ret
 
     def when_holds(self, spec, node: ast.Call, state: State) -> bool:
@@ -1051,7 +1056,8 @@ class FunctionAnalyzer:
             self._sites[key] = site
         return site
 
-    def report(self, spec, tv: TaintValue, node: ast.Call, func: ast.AST) -> None:
+    def report(self, spec, tv: TaintValue, node: ast.Call, func: ast.AST) -> bool:
+        """Record findings/summary hits; return whether anything reached the sink."""
         site = None
         for (origin, rules), path in tv.facts.items():
             if spec.rule_id not in rules:
@@ -1061,6 +1067,7 @@ class FunctionAnalyzer:
                 self.add_finding(spec.rule_id, origin, path, site)
             elif origin.function == self.fn.qualname:
                 self.add_hit(spec.rule_id, origin.key, path, site)
+        return site is not None
 
     def add_finding(self, rule_id: str, origin: SourceSite, path: tuple, site: SinkSite) -> None:
         key = (rule_id, site.location, origin)
