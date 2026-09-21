@@ -110,3 +110,10 @@ def test_type_annotations_and_typing_do_not_cause_taint(run_scan):
     )
     result = run_scan(code)
     assert result.findings == [] and result.diagnostics == []
+
+
+def test_python_syntax_warnings_are_not_printed(tmp_path, repo_rules, capfd):
+    write_tree(tmp_path, {"w.py": "import re\nPATTERN = '\\d+\\s'\n"})  # invalid escapes in the scanned file
+    result = scan(str(tmp_path), repo_rules, ScanOptions())
+    assert result.diagnostics == []
+    assert "SyntaxWarning" not in capfd.readouterr().err

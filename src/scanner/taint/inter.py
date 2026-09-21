@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from ..model import Finding, PathStep, StepKind
 from ..resolve import BOUND, INST, PATH, RET, Ref
-from .intra import FunctionAnalyzer, is_constant_collection_literal
+from .intra import FunctionAnalyzer, constant_string, is_constant_collection_literal
 from .models import MUTATING_METHODS
 from .spec import TaintRuleSet
 from .summaries import BOTTOM, Summary
@@ -62,9 +62,11 @@ def scope_facts(body: list, params: list[str]):
     """Names bound in a function body (Python's scoping rules, simplified).
 
     Returns ``(locals, globals, nonlocals, has_nested, const_collections,
-    calls)``. ``const_collections`` are locals assigned exactly once, to a
-    literal collection of constants, and never mutated in place; ``calls`` are
-    the call nodes of this scope (for ordering the fixpoint).
+    calls, const_strings)``. ``const_collections`` are locals assigned exactly
+    once, to a literal collection of constants, and never mutated in place;
+    ``calls`` are the call nodes of this scope (for ordering the fixpoint);
+    ``const_strings`` maps locals assigned exactly once to a string literal to
+    that string.
     """
     local = set(params)
     globals_: set[str] = set()
@@ -74,6 +76,7 @@ def scope_facts(body: list, params: list[str]):
     const_candidates: dict[str, bool] = {}
     mutated: set[str] = set()
     calls: list[ast.Call] = []
+    strings: dict[str, str] = {}
     stack = list(body)
     while stack:
         node = stack.pop()
@@ -133,6 +136,8 @@ def scope_facts(body: list, params: list[str]):
             targets = node.targets if t is ast.Assign else [node.target]
             if len(targets) == 1 and isinstance(targets[0], ast.Name):
                 const_candidates[targets[0].id] = is_constant_collection_literal(node.value)
+                if node.value is not None:
+                    strings[targets[0].id] = node.value
         elif t is ast.Call:
             calls.append(node)
             f = node.func
@@ -148,7 +153,17 @@ def scope_facts(body: list, params: list[str]):
                 stack.append(value)
     local -= globals_ | nonlocals
     consts = frozenset(n for n, ok in const_candidates.items() if ok and stores[n] == 1 and n not in mutated)
-    return frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts, calls
+    # names assigned once to a string built from literals and earlier such names
+    const_strings: dict[str, str] = {}
+    pending = sorted(
+        ((n, v) for n, v in strings.items() if stores[n] == 1),
+        key=lambda item: (getattr(item[1], "lineno", 0), getattr(item[1], "col_offset", 0)),
+    )
+    for name, value in pending:
+        text = constant_string(value, const_strings)
+        if text is not None:
+            const_strings[name] = text
+    return frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts, calls, const_strings
 
 
 class ClassInfo:
@@ -193,8 +208,9 @@ class FunctionInfo:
             body = [node.body]
         else:
             body = node.body
-        local, globs, nonloc, has_nested, consts, calls = scope_facts(body, [p.name for p in self.params])
+        local, globs, nonloc, has_nested, consts, calls, strings = scope_facts(body, [p.name for p in self.params])
         self.calls = calls
+        self.const_strings = strings
         self.local_names = local
         self.global_decls = globs
         self.nonlocal_decls = nonloc
@@ -242,6 +258,7 @@ class TaintProgram:
         self.func_by_node: dict[int, FunctionInfo] = {}
         self.class_by_node: dict[int, ClassInfo] = {}
         self.module_consts: dict[str, frozenset] = {}
+        self.module_strings: dict[str, dict] = {}
         # Per-file tables keyed by the name *inside* the module ("f", "C.m"),
         # so two files with the same module name never collide.
         self.module_functions: dict[str, dict[str, FunctionInfo]] = {}
@@ -265,6 +282,9 @@ class TaintProgram:
             self._add(modfn)
             self._collect(mod, mod.tree.body, mod.module_name, None, None)
             self.module_consts[mod.path] = self._module_consts(mod)
+            self.module_strings[mod.path] = {
+                k: v for k, v in modfn.const_strings.items() if k not in self.module_consts_mutated
+            }
         for cls in self.classes.values():
             self._resolve_bases(cls)
         self._build_families()
@@ -333,7 +353,7 @@ class TaintProgram:
         body = [s for s in mod.tree.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
         consts = scope_facts(body, [])[4]
         # a function mutating the collection (ALLOWED.add(x)) disqualifies it
-        mutated = set()
+        mutated = self.module_consts_mutated = set()
         for node in mod.nodes:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 f = node.func

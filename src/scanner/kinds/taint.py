@@ -11,6 +11,13 @@ Rule schema (see rules.yaml for real examples)::
         when:               # optional: conditions on other arguments
           {kwarg: shell, is_true: true}
     sanitizers: [{pattern: shlex.quote}, ...]                 # optional
+    safe_prefixes: ["https://*/*"]                            # optional
+
+``safe_prefixes`` are globs matched against the constant leading text of a
+string built by concatenation, an f-string, ``%`` or ``str.format``. When it
+matches, the result no longer carries this rule's taint: for SSRF, a URL whose
+scheme and host are fixed constants cannot be pointed at another host by what
+follows.
 
 The analysis itself lives in :mod:`scanner.taint`; this class only validates
 and compiles rules, runs the whole-program pass in :meth:`prepare`, and hands
@@ -45,7 +52,7 @@ def _nonneg_int(value: Any) -> bool:
 
 class TaintKind(RuleKind):
     name = "taint"
-    fields = frozenset({"sources", "sinks", "sanitizers"})
+    fields = frozenset({"sources", "sinks", "sanitizers", "safe_prefixes"})
     default_precision = "high"
 
     def validate(self, rule: Mapping[str, Any]) -> list[Issue]:
@@ -71,6 +78,10 @@ class TaintKind(RuleKind):
                     issues += self._sink_issues(where, item)
                 elif section == "sources" and "when" in item:
                     issues += self._when_issues(where, item["when"])
+        if "safe_prefixes" in rule:
+            prefixes = rule["safe_prefixes"]
+            if not isinstance(prefixes, list) or not all(isinstance(p, str) and p for p in prefixes):
+                issues.append(("safe_prefixes", "must be a list of non-empty glob strings"))
         return issues
 
     def _sink_issues(self, where: str, item: dict) -> list[Issue]:

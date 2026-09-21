@@ -268,3 +268,51 @@ def test_lookup_in_module_level_dict_with_get(check):
 
 def test_digest_of_tainted_value_is_clean(check):
     check(H + "import hashlib\nconn = sqlite3.connect('db')\ndef f():\n    h = hashlib.sha256(request.args['q'].encode()).hexdigest()\n    conn.execute(\"SELECT * FROM cache WHERE k = '\" + h + \"'\")\n", rule=SQL)
+
+
+def test_ssrf_fixed_scheme_and_host_prefix_is_safe(check):
+    check(
+        H
+        + """
+API = "https://api.example.com"
+BASE = API + "/v1/"
+
+def f(host_only):
+    u = request.args['u']
+    requests.get(f"https://api.github.com/users/{u}")
+    requests.get("https://api.example.com/items/" + u)
+    requests.get("https://api.example.com/search?q={}".format(u))
+    requests.get("https://api.example.com/search?q=%s" % u)
+    requests.get(BASE + u)
+    url = API + "/orders/" + u
+    requests.get(url)
+    requests.get(f"https://{u}/status")  # SINK
+    requests.get("https://" + u)  # SINK
+    requests.get(API + u)  # SINK
+    requests.get(f"{u}/api")  # SINK
+"""
+    ,
+        rule=SSRF,
+    )
+
+
+def test_safe_prefix_only_affects_its_own_rule(check):
+    # the fixed-host prefix sanitizes SSRF, not SQL injection
+    check(H + "conn = sqlite3.connect('db')\ndef f():\n    conn.execute('https://x.example/' + request.args['q'])  # SINK\n", rule=SQL)
+
+
+def test_request_url_and_path_are_sources(check):
+    check(
+        H
+        + """
+from flask import render_template_string
+
+def not_found(e):
+    return render_template_string('<h3>%s</h3>' % request.url)  # SINK
+
+def other():
+    return render_template_string('<p>' + request.path + '</p>')  # SINK
+"""
+    ,
+        rule=XSS,
+    )

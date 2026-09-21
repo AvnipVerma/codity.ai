@@ -44,6 +44,13 @@ rules:
       - pattern: flask.request.files.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
       - pattern: builtins.input
       - pattern: sys.argv
       - pattern: os.environ
@@ -97,6 +104,13 @@ rules:
       - pattern: flask.request.files.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
       - pattern: builtins.input
       - pattern: sys.argv
       - pattern: os.environ
@@ -165,6 +179,13 @@ rules:
       - pattern: flask.request.files.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
       - pattern: builtins.input
       - pattern: sys.argv
     sinks:
@@ -225,6 +246,13 @@ rules:
       - pattern: flask.request.headers.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
     sinks:
       - {pattern: requests.get, arg: 0, kwarg: url}
       - {pattern: requests.post, arg: 0, kwarg: url}
@@ -282,6 +310,9 @@ rules:
       - {pattern: aiohttp.ClientSession.request, arg: 1, kwarg: url}
       - {pattern: urllib3.PoolManager.request, arg: 1, kwarg: url}
     sanitizers: []
+    # A URL whose scheme and host are fixed constants ("https://api.example.com/"
+    # + user data) cannot be redirected to another host by what follows.
+    safe_prefixes: ["http://*/*", "https://*/*"]
 
   - id: py.xss-template
     severity: high
@@ -310,6 +341,13 @@ rules:
       - pattern: flask.request.headers.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
     sinks:
       - {pattern: flask.render_template_string, arg: 0, kwarg: source}
       - {pattern: markupsafe.Markup, arg: 0}
@@ -354,6 +392,13 @@ rules:
       - pattern: flask.request.files.*
       - pattern: flask.request.view_args
       - pattern: flask.request.view_args.*
+      - pattern: flask.request.url
+      - pattern: flask.request.base_url
+      - pattern: flask.request.full_path
+      - pattern: flask.request.path
+      - pattern: flask.request.query_string
+      - pattern: flask.request.referrer
+      - pattern: flask.request.user_agent
       - pattern: builtins.input
       - pattern: sys.argv
     sinks:

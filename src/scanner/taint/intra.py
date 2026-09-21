@@ -18,6 +18,7 @@ is known to return a non-injectable value).
 from __future__ import annotations
 
 import ast
+import fnmatch
 from typing import TYPE_CHECKING
 
 from ..model import PathStep, StepKind
@@ -78,6 +79,35 @@ def access_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
             return node.id, tuple(sels)
         else:
             return None
+
+
+def constant_string(node: ast.AST, names) -> str | None:
+    """Value of a string expression built only from literals and known names.
+
+    ``names`` maps identifiers to their known constant string values.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return names.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = constant_string(node.left, names)
+        right = constant_string(node.right, names) if left is not None else None
+        return left + right if right is not None else None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                parts.append(v.value)
+            elif isinstance(v, ast.FormattedValue) and v.conversion == -1 and v.format_spec is None:
+                inner = constant_string(v.value, names)
+                if inner is None:
+                    return None
+                parts.append(inner)
+            else:
+                return None
+        return "".join(parts)
+    return None
 
 
 def is_constant(node: ast.AST) -> bool:
@@ -828,7 +858,56 @@ class FunctionAnalyzer:
         if tv and isinstance(node.op, (ast.Add, ast.Mod)):
             msg = "concatenated with `+`" if isinstance(node.op, ast.Add) else "formatted with `%`"
             tv = tv.with_step(PathStep(self.mod.location(node), StepKind.STEP, msg))
+            tv = self.prefix_sanitize(node, tv)
         return tv
+
+    # -- constant leading text of built strings (for rules' safe_prefixes)
+
+    def string_constant(self, node: ast.AST) -> str | None:
+        """The full value of an expression that is a known string constant."""
+        return constant_string(node, _ScopeStrings(self))
+
+    def leading_text(self, node: ast.AST) -> str:
+        """Constant text a built string is known to start with (maybe empty)."""
+        full = self.string_constant(node)
+        if full is not None:
+            return full
+        if isinstance(node, ast.JoinedStr):
+            out = []
+            for v in node.values:
+                if not isinstance(v, ast.Constant):
+                    break
+                out.append(v.value)
+            return "".join(out)
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Add):
+                left = self.string_constant(node.left)
+                if left is not None:
+                    return left + self.leading_text(node.right)
+                return self.leading_text(node.left)
+            if isinstance(node.op, ast.Mod):
+                template = self.string_constant(node.left)
+                return template.split("%", 1)[0] if template is not None else ""
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "format"
+        ):
+            template = self.string_constant(node.func.value)
+            return template.split("{", 1)[0] if template is not None else ""
+        return ""
+
+    def prefix_sanitize(self, node: ast.AST, tv: TaintValue) -> TaintValue:
+        prefixes = self.rules.safe_prefixes
+        if not tv or not prefixes:
+            return tv
+        lead = self.leading_text(node)
+        if not lead:
+            return tv
+        kill = frozenset(
+            rule_id for rule_id, globs in prefixes.items() if any(fnmatch.fnmatchcase(lead, g) for g in globs)
+        )
+        return tv.without_rules(kill) if kill else tv
 
     def e_unaryop(self, node: ast.UnaryOp, state: State) -> TaintValue:
         tv = self.eval(node.operand, state)
@@ -856,6 +935,7 @@ class FunctionAnalyzer:
                 tv = tv.join(self.e_formatted(value, state))
         if tv:
             tv = tv.with_step(PathStep(self.mod.location(node), StepKind.STEP, "interpolated into an f-string"))
+            tv = self.prefix_sanitize(node, tv)
         return tv
 
     def e_formatted(self, node: ast.FormattedValue, state: State) -> TaintValue:
@@ -1272,6 +1352,8 @@ class FunctionAnalyzer:
                 msg = None
             if msg:
                 out = out.with_step(PathStep(self.mod.location(node), StepKind.STEP, msg))
+            if attr == "format":
+                out = self.prefix_sanitize(node, out)
         return out
 
     def mutate(self, root: str, sels: tuple, attr: str, node, func, pos: list, kws: list, state: State) -> None:
@@ -1291,6 +1373,21 @@ class FunctionAnalyzer:
         step = PathStep(self.mod.location(node), StepKind.STEP, f"added to `{text}` via .{attr}()", var=text)
         base = self.read_var(root, state) or CLEAN
         self.store_var(root, base.write(sels + (key,), VarVal(tv.with_step(step)), strong=False), state)
+
+
+class _ScopeStrings:
+    """Name -> constant string lookup: function locals, then module globals."""
+
+    __slots__ = ("an",)
+
+    def __init__(self, analyzer: "FunctionAnalyzer") -> None:
+        self.an = analyzer
+
+    def get(self, name: str):
+        an = self.an
+        if an.is_local(name):
+            return an.fn.const_strings.get(name)
+        return an.prog.module_strings.get(an.mod.path, {}).get(name)
 
 
 def _is_super_call(func: ast.AST) -> bool:

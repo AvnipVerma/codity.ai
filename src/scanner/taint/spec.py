@@ -67,6 +67,7 @@ class CompiledTaintRule:
     sources: tuple[SourceSpec, ...]
     sinks: tuple[SinkSpec, ...]
     sanitizers: tuple[str, ...]
+    safe_prefixes: tuple[str, ...] = ()
 
 
 def compile_condition(raw: dict) -> Condition:
@@ -104,7 +105,7 @@ def compile_rule(rule_id: str, raw: dict) -> CompiledTaintRule:
         kw = s.get("kwarg", s.get("kwargs", ()))
         kwargs = (kw,) if isinstance(kw, str) else tuple(kw)
         sinks.append(SinkSpec(rule_id, s["pattern"], positions, receiver, kwargs, _conditions(s.get("when"))))
-    return CompiledTaintRule(sources, tuple(sinks), sanitizers)
+    return CompiledTaintRule(sources, tuple(sinks), sanitizers, tuple(raw.get("safe_prefixes") or ()))
 
 
 class TaintRuleSet:
@@ -120,7 +121,11 @@ class TaintRuleSet:
         self.sources: PatternIndex[SourceSpec] = PatternIndex()
         self.sinks: PatternIndex[SinkSpec] = PatternIndex()
         self.sanitizers: PatternIndex[str] = PatternIndex()
+        # rule id -> globs for the constant leading text of built strings
+        self.safe_prefixes: dict[str, tuple[str, ...]] = {}
         for rule in rules:
+            if rule.compiled.safe_prefixes:
+                self.safe_prefixes[rule.id] = rule.compiled.safe_prefixes
             compiled: CompiledTaintRule = rule.compiled
             for spec in compiled.sources:
                 self.sources.add(spec.pattern, spec)

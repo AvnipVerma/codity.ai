@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import os
 import tokenize
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from .discovery import SourceFile
@@ -204,7 +205,12 @@ def build_program(root: str, files: list[SourceFile]) -> ProgramContext:
             program.warn(src.rel_path, f"skipped, cannot read file: {exc}")
             continue
         try:
-            tree = ast.parse(text, filename=src.rel_path)
+            with warnings.catch_warnings():
+                # CPython warns about e.g. invalid escape sequences in the code we
+                # read; that is the analysed program's business, not ours.
+                warnings.simplefilter("ignore", SyntaxWarning)
+                warnings.simplefilter("ignore", DeprecationWarning)
+                tree = ast.parse(text, filename=src.rel_path)
         except SyntaxError as exc:
             where = f" (line {exc.lineno})" if exc.lineno else ""
             program.warn(src.rel_path, f"skipped, syntax error{where}: {exc.msg}")
