@@ -1,8 +1,9 @@
 # codity scanner
 
 A static taint analyzer for Python, written in Python. It parses code with the
-standard `ast` module, tracks untrusted data from where it enters (Flask request
-data, `input()`, `sys.argv`, environment variables) through assignments,
+standard `ast` module, tracks untrusted data from where it enters (Flask,
+Django, DRF, aiohttp and Starlette request data, `input()`, `sys.argv`,
+environment variables) through assignments,
 string building, containers, attributes and function calls, within a file and
 across files, and reports the flows that reach a dangerous operation (SQL
 execution, shell commands, file paths, outbound URLs, template rendering,
@@ -184,6 +185,9 @@ A new vulnerability class of an existing kind is a YAML edit only.
   sources:
     - pattern: flask.request.args.get
       when: {kwarg: type, not_in: [int]}     # optional; calls only
+    - patterns: [django.http.HttpRequest.GET, django.http.HttpRequest.GET.*]   # several at once
+  typed_parameters:               # optional: parameters injected by frameworks
+    - {name: request, type: django.http.HttpRequest, module_imports: [django]}
   sinks:
     - pattern: flask.redirect
       arg: 0                      # int, [ints], any (default), or receiver
@@ -203,7 +207,14 @@ A new vulnerability class of an existing kind is a YAML edit only.
   returned by a library call are named after the call:
   `requests.Session().get` is `requests.Session.get`.
 * A source matches a **call** (the return value is tainted) or a **read** of
-  the name (`request.args` makes `request.args["q"]` tainted).
+  the name (`request.args` makes `request.args["q"]` tainted). Source and
+  sanitizer entries may use `patterns: [...]` instead of `pattern:`, so
+  rules.yaml defines each source group once with a YAML anchor and reuses it.
+* **`typed_parameters`** type the parameters that frameworks inject. In a
+  module importing one of `module_imports`, a parameter called `name` is an
+  instance of `type`, so `request.GET.get("q")` resolves to
+  `django.http.HttpRequest.GET.get` and ordinary patterns apply. A parameter
+  with an annotation (`request: Request`) is typed from the annotation.
 * **`when`** conditions: `is_true` holds for a truthy constant or any
   non-constant expression (so `shell=flag` counts); `in`/`not_in` compare the
   argument's resolved name with patterns (`Loader=yaml.SafeLoader`). An absent
@@ -254,7 +265,9 @@ redacted in every output: at most four leading characters plus the length.
 | `from x import *` | not resolved; the names it brings in are unknown |
 | `importlib.import_module(name)`, `__import__(name)` | not followed |
 | monkey-patching, decorators that replace a function, metaclasses, `@property` bodies | not followed; decorated functions are assumed to keep their behaviour |
-| Django/FastAPI/aiohttp request parameters | not sources (no dotted name to match). The largest known false-negative class (BENCHMARK.md §4). |
+| `def view(request):` in a module importing `django` / `rest_framework` / `aiohttp` | typed by the rules' `typed_parameters`: `request.GET[...]`, `request.data[...]`, `request.query[...]` are sources |
+| `async def hook(request: Request):` | typed from the annotation (Starlette/FastAPI `Request`, or any class) |
+| FastAPI implicit parameters (`def search(q: str)` under `@app.get`) | not sources; only the `Request` object is modelled |
 
 ## Where the analysis stops
 
@@ -300,7 +313,9 @@ Each of these is pinned by a test or a corpus file:
 * Low-entropy real passwords are missed (`corpus/vulnerable/secret_weak_password.py`),
   and password *hashes* and public keys such as `pk_live_...` are reported
   (pygoat triage, `corpus/safe/secret_public_values.py`).
-* Framework-injected request objects (`corpus/vulnerable/sqli_django_view.py`).
+* FastAPI's implicit query parameters are not sources, and a framework
+  `request` parameter is only recognised when it is literally called
+  `request` (or annotated).
 * A file whose path changes looks new to a baseline
   (`tests/test_baseline.py::test_renaming_the_file_is_a_known_break`).
 * Functions nested more than ~800 levels deep in one expression are skipped
@@ -344,7 +359,7 @@ written as UTF-8 bytes with `\n`, and a test runs the CLI under three
 |---|---|
 | `src/scanner/` | the scanner (`engine.py`, `kinds/`, `taint/`, `resolve.py`, `output/`...) |
 | `rules.yaml` | shipped rules: SQL injection, command injection, path traversal, SSRF, XSS/SSTI, insecure deserialization, hard-coded secrets |
-| `corpus/` + `corpus/labels.json` | labelled benchmark corpus (80 files) |
+| `corpus/` + `corpus/labels.json` | labelled benchmark corpus (90 files) |
 | `bench/evaluate.py` | precision/recall on the corpus; `bench/gen_large_repo.py` timing project; `bench/public_repos.md` triage |
-| `tests/` | 380 tests (379 by default + the opt-in timing test), one file per component |
+| `tests/` | 386 tests (385 by default + the opt-in timing test), one file per component |
 | `BENCHMARK.md`, `DECISIONS.md` | measured results and design decisions |

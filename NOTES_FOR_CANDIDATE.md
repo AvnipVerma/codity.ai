@@ -98,3 +98,25 @@ DECISIONS.md yourself.
     rejected the push. The token is now assembled at runtime in the test. The
     commit containing it had not been pushed, so that single local commit was
     amended (the only amend in the history; order of work unchanged).
+
+18. **Public-repo triage drove three general changes (M15).** Missing
+    `request.url`/`.path`... sources (missed SSTI in Vulnerable-Flask-App), a
+    fixed-host SSRF false positive in microblog (`safe_prefixes`), and every
+    Django view in pygoat missed (`typed_parameters` + annotation typing). Each
+    is disclosed in bench/public_repos.md with before/after numbers.
+
+19. **Inaccurate triage wording caught on re-read (M15).** Two pygoat rows first
+    quoted code that was not literally there (`pickle.loads(base64.b64decode(
+    request.COOKIES.get(...)))` is actually spread over three lines;
+    "formatted" was actually concatenation). Corrected after re-reading the
+    source. Verdicts were unaffected.
+
+20. **Corpus label note went stale (M15).** `vulnerable/sqli_django_view.py`
+    was written as an expected false negative; after typed parameters it is
+    found. The expected finding was not touched; only the explanatory note
+    was updated to say so.
+
+21. **Summary shortener split inside a string literal (M16).** Found in the
+    clean-clone check: a source text containing dots inside a literal was
+    abbreviated at the last dot (`….1')`). Only identifier tails are
+    abbreviated now; regression test added.
