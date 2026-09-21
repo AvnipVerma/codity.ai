@@ -53,6 +53,7 @@ class Ref:
 
 NO_REFS: frozenset[Ref] = frozenset()
 Lookup = Callable[[str], "frozenset[Ref] | None"]
+ClassOracle = Callable[[str], "str | None"]
 
 
 def target_names(target: ast.AST) -> list[str]:
@@ -161,6 +162,8 @@ class ModuleResolver:
                                 self.defined[t.id] = "lambda"
                             elif is_dotted(value) or isinstance(value, ast.Call):
                                 pending.append((t.id, value))
+                                if isinstance(value, ast.Call):
+                                    self.assigned.add(t.id)  # a value, not a pure alias
                             else:
                                 self.assigned.add(t.id)
                         else:
@@ -212,12 +215,17 @@ class ModuleResolver:
             return frozenset({Ref(PATH, f"builtins.{name}")})
         return None
 
-    def refs_for(self, expr: ast.AST, lookup: Lookup) -> frozenset[Ref]:
-        """Resolve an expression to references, using ``lookup`` for bare names."""
+    def refs_for(self, expr: ast.AST, lookup: Lookup, classes: ClassOracle | None = None) -> frozenset[Ref]:
+        """Resolve an expression to references, using ``lookup`` for bare names.
+
+        ``classes`` optionally maps a dotted callee name to the qualified name
+        of a class defined in the scanned project; calling such a name yields
+        an :data:`INST` reference instead of an opaque :data:`RET` one.
+        """
         if isinstance(expr, ast.Name):
             return lookup(expr.id) or NO_REFS
         if isinstance(expr, ast.Attribute):
-            base = self.refs_for(expr.value, lookup)
+            base = self.refs_for(expr.value, lookup, classes)
             return attr_refs(base, expr.attr)
         if isinstance(expr, ast.Call):
             func = expr.func
@@ -230,9 +238,15 @@ class ModuleResolver:
                 and isinstance(expr.args[1].value, str)
                 and Ref(PATH, "builtins.getattr") in (lookup("getattr") or NO_REFS)
             ):
-                return attr_refs(self.refs_for(expr.args[0], lookup), expr.args[1].value)
-            callee = self.refs_for(func, lookup)
-            return frozenset(Ref(RET, r.name) for r in callee if r.kind in (PATH, BOUND))
+                return attr_refs(self.refs_for(expr.args[0], lookup, classes), expr.args[1].value)
+            out = set()
+            for r in self.refs_for(func, lookup, classes):
+                if r.kind == PATH:
+                    cls = classes(r.name) if classes is not None else None
+                    out.add(Ref(INST, cls) if cls else Ref(RET, r.name))
+                elif r.kind == BOUND:
+                    out.add(Ref(RET, r.name))
+            return frozenset(out)
         return NO_REFS
 
 

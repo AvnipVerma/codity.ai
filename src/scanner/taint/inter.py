@@ -27,7 +27,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from ..model import Finding, PathStep, StepKind
-from ..resolve import BOUND, PATH, Ref, target_names
+from ..resolve import BOUND, INST, PATH, RET, Ref
 from .intra import FunctionAnalyzer, is_constant_collection_literal
 from .models import MUTATING_METHODS
 from .spec import TaintRuleSet
@@ -231,6 +231,11 @@ class TaintProgram:
         self.func_by_node: dict[int, FunctionInfo] = {}
         self.class_by_node: dict[int, ClassInfo] = {}
         self.module_consts: dict[str, frozenset] = {}
+        # Per-file tables keyed by the name *inside* the module ("f", "C.m"),
+        # so two files with the same module name never collide.
+        self.module_functions: dict[str, dict[str, FunctionInfo]] = {}
+        self.module_classes: dict[str, dict[str, ClassInfo]] = {}
+        self._oracles: dict[str, object] = {}
         self.summaries: dict[str, Summary] = {}
         self.fn_findings: dict[str, dict] = {}
         self.fields: dict[str, dict] = {}
@@ -255,13 +260,26 @@ class TaintProgram:
 
     def _add(self, fi: FunctionInfo) -> None:
         q = fi.qualname
-        if q in self.functions:  # redefinition (if/else branches): keep both
+        if q in self.functions:  # redefinition, or two files with one module name
             n = 2
             while f"{q}#{n}" in self.functions:
                 n += 1
             fi.qualname = f"{q}#{n}"
         self.functions[fi.qualname] = fi
         self.func_by_node[id(fi.node)] = fi
+        if fi.kind != "module":
+            self.module_functions.setdefault(fi.module.path, {}).setdefault(fi.display, fi)
+
+    def _add_class(self, ci: ClassInfo, local: str) -> None:
+        q = ci.qualname
+        if q in self.classes:
+            n = 2
+            while f"{q}#{n}" in self.classes:
+                n += 1
+            ci.qualname = f"{q}#{n}"
+        self.classes[ci.qualname] = ci
+        self.class_by_node[id(ci.node)] = ci
+        self.module_classes.setdefault(ci.module.path, {}).setdefault(local, ci)
 
     def _collect(self, mod, stmts: list, prefix: str, parent: FunctionInfo | None, cls: ClassInfo | None) -> None:
         base = mod.module_name + "."
@@ -280,9 +298,8 @@ class TaintProgram:
             elif isinstance(s, ast.ClassDef):
                 qual = f"{prefix}.{s.name}"
                 ci = ClassInfo(qual, mod, s)
-                self.classes.setdefault(qual, ci)
-                self.class_by_node[id(s)] = ci
-                self._collect(mod, s.body, qual, parent, ci)
+                self._add_class(ci, qual[len(base):])
+                self._collect(mod, s.body, ci.qualname, parent, ci)
             elif isinstance(s, (ast.Assign, ast.AnnAssign)) and isinstance(s.value, ast.Lambda):
                 targets = s.targets if isinstance(s, ast.Assign) else [s.target]
                 for t in targets:
@@ -323,7 +340,7 @@ class TaintProgram:
         if len(rest) == 1:
             return rest[0] in self.module_consts.get(mod.path, ())
         if len(rest) == 2:
-            cls = self.classes.get(f"{mod.module_name}.{rest[0]}")
+            cls = self.module_classes.get(mod.path, {}).get(rest[0])
             return cls is not None and rest[1] in cls.const_attrs
         return False
 
@@ -334,8 +351,61 @@ class TaintProgram:
             got = self._canonical[key] = self.ctx.index.canonical(name, near)
         return got
 
+    def project_object(self, name: str, near: str):
+        """Resolve a dotted name to ``("function", fi)``, ``("class", ci)``,
+        ``("method", (ci, attr))`` or ``None`` for names outside the scan."""
+        split = self.ctx.index.split(self.canonical(name, near), near)
+        if split is None:
+            return None
+        mod, rest = split
+        if not rest:
+            return None
+        local = ".".join(rest)
+        fi = self.module_functions.get(mod.path, {}).get(local)
+        if fi is not None:
+            return ("function", fi)
+        classes = self.module_classes.get(mod.path, {})
+        ci = classes.get(local)
+        if ci is not None:
+            return ("class", ci)
+        if len(rest) >= 2:
+            ci = classes.get(".".join(rest[:-1]))
+            if ci is not None:
+                return ("method", (ci, rest[-1]))
+        return None
+
     def class_for(self, name: str, near: str) -> ClassInfo | None:
-        return self.classes.get(self.canonical(name, near))
+        got = self.project_object(name, near)
+        return got[1] if got is not None and got[0] == "class" else None
+
+    def class_oracle(self, near: str):
+        """Callable mapping a dotted callee name to a project class qualname."""
+        oracle = self._oracles.get(near)
+        if oracle is None:
+            cache: dict = {}
+
+            def oracle(name: str):
+                if name not in cache:
+                    cls = self.class_for(name, near)
+                    cache[name] = cls.qualname if cls is not None else None
+                return cache[name]
+
+            self._oracles[near] = oracle
+        return oracle
+
+    def promote(self, refs, near: str):
+        """Turn module-level ``RET`` references to project classes into instances."""
+        if not refs or not any(r.kind == RET for r in refs):
+            return refs
+        oracle = self.class_oracle(near)
+        out = set()
+        for r in refs:
+            if r.kind == RET:
+                cls = oracle(r.name)
+                out.add(Ref(INST, cls) if cls else r)
+            else:
+                out.add(r)
+        return frozenset(out)
 
     def _resolve_bases(self, cls: ClassInfo) -> None:
         res = cls.module.resolver
@@ -344,11 +414,13 @@ class TaintProgram:
             for r in sorted(res.refs_for(expr, res.module_lookup)):
                 if r.kind == PATH:
                     base = self.class_for(r.name, cls.module.path)
-                    if base is None:
-                        # a class defined in the same function/class scope
-                        base = self.classes.get(f"{cls.qualname.rpartition('.')[0]}.{r.name.rpartition('.')[2]}")
                     if base is not None and base is not cls:
                         bases.append(base)
+            if not bases and isinstance(expr, ast.Name):
+                # a base class defined in the same enclosing scope
+                base = self.classes.get(f"{cls.qualname.rpartition('.')[0]}.{expr.id}")
+                if base is not None and base is not cls:
+                    bases.append(base)
         cls.bases = bases
 
     def mro(self, cls: ClassInfo) -> list[ClassInfo]:
@@ -416,19 +488,16 @@ class TaintProgram:
         near = analyzer.mod.path if analyzer is not None else ""
         for r in sorted(refs):
             if r.kind == PATH:
-                q = self.canonical(r.name, near)
-                fi = self.functions.get(q)
-                if fi is not None:
-                    out.append((fi, 1 if fi.method_kind == "class" else 0, None))
+                got = self.project_object(r.name, near)
+                if got is None:
                     continue
-                cls = self.classes.get(q)
-                if cls is not None:
-                    out.append((self.lookup_method(cls, "__init__"), 1, cls))
-                    continue
-                prefix, _, attr = q.rpartition(".")
-                cls = self.classes.get(prefix)
-                if cls is not None:
-                    m = self.lookup_method(cls, attr)
+                kind, obj = got
+                if kind == "function":
+                    out.append((obj, 1 if obj.method_kind == "class" else 0, None))
+                elif kind == "class":
+                    out.append((self.lookup_method(obj, "__init__"), 1, obj))
+                else:
+                    m = self.lookup_method(obj[0], obj[1])
                     if m is not None:
                         out.append((m, 1 if m.method_kind == "class" else 0, None))
             elif r.kind == BOUND:

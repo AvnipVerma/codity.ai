@@ -129,6 +129,7 @@ class FunctionAnalyzer:
         self.exit_states: list[State] = []
         self.class_depth = 0
         self._sites: dict = {}
+        self.classes = prog.class_oracle(self.mod.path)
 
     # ------------------------------------------------------------------ entry
 
@@ -231,10 +232,10 @@ class FunctionAnalyzer:
                 s = self.prog.summaries.get(f.qualname)
                 return s.closure_aliases.get(name) if s is not None else None
             f = f.parent
-        return self.res.module_lookup(name)
+        return self.prog.promote(self.res.module_lookup(name), self.mod.path)
 
     def refs_of(self, node: ast.AST, state: State) -> frozenset:
-        return self.res.refs_for(node, lambda n: self.lookup(n, state))
+        return self.res.refs_for(node, lambda n: self.lookup(n, state), self.classes)
 
     def read_var(self, name: str, state: State) -> VarVal | None:
         vv = state.vars.get(name)
@@ -613,12 +614,7 @@ class FunctionAnalyzer:
         if isinstance(node, ast.Await):
             return self.value_refs(node.value, state)
         if isinstance(node, ast.Call):
-            out = set()
-            for r in self.refs_of(node.func, state):
-                if r.kind == PATH:
-                    cls = self.prog.class_for(r.name, self.mod.path)
-                    out.add(Ref(INST, cls.qualname) if cls is not None else Ref(RET, r.name))
-            return frozenset(out)
+            return frozenset(r for r in self.refs_of(node, state) if r.kind in (INST, RET))
         return NO_REFS
 
     def eval_value(self, node: ast.AST, state: State, depth: int = 0) -> VarVal:
@@ -1177,10 +1173,19 @@ class FunctionAnalyzer:
                             self.add_hit(hit.rule_id, origin.key, full, hit.sink)
             if fi.class_info is not None:
                 fam = self.prog.family(fi.class_info)
+                on_self = self.self_name is not None and offset == 1 and ctor is None and (
+                    _is_super_call(func)
+                    or (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == self.self_name)
+                )
                 for sels, tv in summary.self_writes.items():
                     inst = self.instantiate(tv, fi, binding, summary.defaults, node)
                     if inst:
                         self.prog.contribute_field(fam, sels, inst)
+                        if on_self:
+                            # self.helper(q) / super().__init__(q): the write lands on
+                            # *our* self, so it becomes part of our own summary too.
+                            vv = state.vars.get(self.self_name) or CLEAN
+                            state.vars[self.self_name] = vv.write(sels, VarVal(inst), strong=False)
                 if offset == 1 and ctor is None and isinstance(func, ast.Attribute):
                     p = access_path(func.value)
                     if p is not None and p[0] != self.self_name:
@@ -1264,6 +1269,15 @@ class FunctionAnalyzer:
         step = PathStep(self.mod.location(node), StepKind.STEP, f"added to `{text}` via .{attr}()", var=text)
         base = self.read_var(root, state) or CLEAN
         self.store_var(root, base.write(sels + (key,), VarVal(tv.with_step(step)), strong=False), state)
+
+
+def _is_super_call(func: ast.AST) -> bool:
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Call)
+        and isinstance(func.value.func, ast.Name)
+        and func.value.func.id == "super"
+    )
 
 
 def _merge_at(fields: dict, key: str, vv: VarVal) -> None:
