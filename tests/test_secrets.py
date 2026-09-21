@@ -82,3 +82,28 @@ def test_sarif_location_is_the_assignment(run_scan):
     doc = json.loads(render_sarif(result))
     region = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
     assert (region["startLine"], region["startColumn"]) == (3, 1)
+
+
+# Escaped newlines: the value is spliced into Python source as a one-line literal.
+PEM = r"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAz9k3Lm2p\n-----END RSA PRIVATE KEY-----\n"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        f'PRIVATE_KEY = "{PEM}"\n',
+        f'cert_blob = "{PEM}"\n',  # any name
+        # positional argument; assembled at runtime so this test file itself does
+        # not contain a provider-format key (GitHub push protection rejects it)
+        'import stripe\nstripe.Client("' + "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc" + '")\n',
+        'headers = ["ghp_R4nd0mT0k3nV4lu3F0rT3st1ng"]\n',
+    ],
+)
+def test_forced_values_are_reported_anywhere(run_scan, code):
+    assert len(hits(run_scan(code), RULE)) == 1
+
+
+def test_prefix_checks_are_not_forced_values(run_scan):
+    code = 'def kind(token):\n    return token.startswith("ghp_") or token.startswith("sk_live_")\n'
+    assert hits(run_scan(code), RULE) == []
+    assert hits(run_scan('HEADER = "-----BEGIN RSA PRIVATE KEY-----"\n'), RULE) == []

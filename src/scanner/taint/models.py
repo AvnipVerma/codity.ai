@@ -43,6 +43,8 @@ NON_PROPAGATING_METHODS = frozenset(
         "exists",
         "is_file",
         "is_dir",
+        "hexdigest",
+        "digest",
     }
 )
 

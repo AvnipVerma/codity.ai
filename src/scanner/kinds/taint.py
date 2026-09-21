@@ -26,6 +26,7 @@ from ..taint.spec import ANY, RECEIVER, compile_rule
 from .base import Issue, RuleKind
 
 SINK_KEYS = frozenset({"pattern", "arg", "kwarg", "kwargs", "when"})
+SOURCE_KEYS = frozenset({"pattern", "when"})
 SIMPLE_KEYS = frozenset({"pattern"})
 WHEN_KEYS = frozenset({"kwarg", "pos", "is_true", "in", "not_in"})
 
@@ -62,12 +63,14 @@ class TaintKind(RuleKind):
                     issues.append((where, "must be a mapping with a 'pattern' key"))
                     continue
                 issues += _pattern_issues(f"{where}.pattern", item["pattern"])
-                allowed = SINK_KEYS if section == "sinks" else SIMPLE_KEYS
+                allowed = {"sinks": SINK_KEYS, "sources": SOURCE_KEYS}.get(section, SIMPLE_KEYS)
                 for key in item:
                     if key not in allowed:
                         issues.append((f"{where}.{key}", "unknown key"))
                 if section == "sinks":
                     issues += self._sink_issues(where, item)
+                elif section == "sources" and "when" in item:
+                    issues += self._when_issues(where, item["when"])
         return issues
 
     def _sink_issues(self, where: str, item: dict) -> list[Issue]:
@@ -88,36 +91,40 @@ class TaintKind(RuleKind):
                 if not isinstance(names, list) or not all(isinstance(n, str) and n.isidentifier() for n in names):
                     issues.append((f"{where}.{key}", "must be an identifier or a list of identifiers"))
         if "when" in item:
-            conds = item["when"]
-            conds = [conds] if isinstance(conds, dict) else conds
-            if not isinstance(conds, list) or not conds:
-                issues.append((f"{where}.when", "must be a mapping or a list of mappings"))
-                return issues
-            for j, cond in enumerate(conds):
-                cw = f"{where}.when" if len(conds) == 1 else f"{where}.when[{j}]"
-                if not isinstance(cond, dict):
-                    issues.append((cw, "must be a mapping"))
-                    continue
-                if not isinstance(cond.get("kwarg"), str) or not cond["kwarg"].isidentifier():
-                    issues.append((f"{cw}.kwarg", "is required and must be an identifier"))
-                if "pos" in cond and not _nonneg_int(cond["pos"]):
-                    issues.append((f"{cw}.pos", "must be a non-negative integer"))
-                ops = [k for k in ("is_true", "in", "not_in") if k in cond]
-                if len(ops) != 1:
-                    issues.append((cw, "needs exactly one of is_true, in, not_in"))
-                elif ops[0] == "is_true":
-                    if not isinstance(cond["is_true"], bool):
-                        issues.append((f"{cw}.is_true", "must be true or false"))
+            issues += self._when_issues(where, item["when"])
+        return issues
+
+    def _when_issues(self, where: str, conds) -> list[Issue]:
+        issues: list[Issue] = []
+        conds = [conds] if isinstance(conds, dict) else conds
+        if not isinstance(conds, list) or not conds:
+            issues.append((f"{where}.when", "must be a mapping or a list of mappings"))
+            return issues
+        for j, cond in enumerate(conds):
+            cw = f"{where}.when" if len(conds) == 1 else f"{where}.when[{j}]"
+            if not isinstance(cond, dict):
+                issues.append((cw, "must be a mapping"))
+                continue
+            if not isinstance(cond.get("kwarg"), str) or not cond["kwarg"].isidentifier():
+                issues.append((f"{cw}.kwarg", "is required and must be an identifier"))
+            if "pos" in cond and not _nonneg_int(cond["pos"]):
+                issues.append((f"{cw}.pos", "must be a non-negative integer"))
+            ops = [k for k in ("is_true", "in", "not_in") if k in cond]
+            if len(ops) != 1:
+                issues.append((cw, "needs exactly one of is_true, in, not_in"))
+            elif ops[0] == "is_true":
+                if not isinstance(cond["is_true"], bool):
+                    issues.append((f"{cw}.is_true", "must be true or false"))
+            else:
+                values = cond[ops[0]]
+                if not isinstance(values, list) or not values:
+                    issues.append((f"{cw}.{ops[0]}", "must be a non-empty list of patterns"))
                 else:
-                    values = cond[ops[0]]
-                    if not isinstance(values, list) or not values:
-                        issues.append((f"{cw}.{ops[0]}", "must be a non-empty list of patterns"))
-                    else:
-                        for k, v in enumerate(values):
-                            issues += _pattern_issues(f"{cw}.{ops[0]}[{k}]", v)
-                for key in cond:
-                    if key not in WHEN_KEYS:
-                        issues.append((f"{cw}.{key}", "unknown key"))
+                    for k, v in enumerate(values):
+                        issues += _pattern_issues(f"{cw}.{ops[0]}[{k}]", v)
+            for key in cond:
+                if key not in WHEN_KEYS:
+                    issues.append((f"{cw}.{key}", "unknown key"))
         return issues
 
     def compile(self, rule):

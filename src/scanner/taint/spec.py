@@ -55,8 +55,16 @@ class SinkSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSpec:
+    rule_id: str
+    pattern: str
+    # For calls only: the call is a source only if every condition holds.
+    when: tuple[Condition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledTaintRule:
-    sources: tuple[str, ...]
+    sources: tuple[SourceSpec, ...]
     sinks: tuple[SinkSpec, ...]
     sanitizers: tuple[str, ...]
 
@@ -70,8 +78,16 @@ def compile_condition(raw: dict) -> Condition:
     return Condition(raw["kwarg"], pos, op, names=names)
 
 
+def _conditions(raw_when) -> tuple[Condition, ...]:
+    if not raw_when:
+        return ()
+    if isinstance(raw_when, dict):
+        raw_when = [raw_when]
+    return tuple(compile_condition(c) for c in raw_when)
+
+
 def compile_rule(rule_id: str, raw: dict) -> CompiledTaintRule:
-    sources = tuple(s["pattern"] for s in raw["sources"])
+    sources = tuple(SourceSpec(rule_id, s["pattern"], _conditions(s.get("when"))) for s in raw["sources"])
     sanitizers = tuple(s["pattern"] for s in raw.get("sanitizers") or ())
     sinks = []
     for s in raw["sinks"]:
@@ -87,11 +103,7 @@ def compile_rule(rule_id: str, raw: dict) -> CompiledTaintRule:
             positions = (arg,)
         kw = s.get("kwarg", s.get("kwargs", ()))
         kwargs = (kw,) if isinstance(kw, str) else tuple(kw)
-        when_raw = s.get("when") or ()
-        if isinstance(when_raw, dict):
-            when_raw = [when_raw]
-        when = tuple(compile_condition(c) for c in when_raw)
-        sinks.append(SinkSpec(rule_id, s["pattern"], positions, receiver, kwargs, when))
+        sinks.append(SinkSpec(rule_id, s["pattern"], positions, receiver, kwargs, _conditions(s.get("when"))))
     return CompiledTaintRule(sources, tuple(sinks), sanitizers)
 
 
@@ -105,13 +117,13 @@ class TaintRuleSet:
     def __init__(self, rules: Sequence) -> None:
         self.rules = {r.id: r for r in rules}
         self.rule_ids = frozenset(self.rules)
-        self.sources: PatternIndex[str] = PatternIndex()
+        self.sources: PatternIndex[SourceSpec] = PatternIndex()
         self.sinks: PatternIndex[SinkSpec] = PatternIndex()
         self.sanitizers: PatternIndex[str] = PatternIndex()
         for rule in rules:
             compiled: CompiledTaintRule = rule.compiled
-            for p in compiled.sources:
-                self.sources.add(p, rule.id)
+            for spec in compiled.sources:
+                self.sources.add(spec.pattern, spec)
             for spec in compiled.sinks:
                 self.sinks.add(spec.pattern, spec)
             for p in compiled.sanitizers:

@@ -64,3 +64,37 @@ DECISIONS.md yourself.
 11. **Test expectation wrong (M10).** A test asserted the call step was on
     line 9; counting the snippet's leading blank line, it is line 10. The code
     was right, the test was wrong.
+
+12. **Nested sinks reported twice (M12).** `engine.execute(text(q))` produced
+    two findings (inner `text()` and outer `execute()`) for one bug. Sinks now
+    consume their rule's taint on their return value.
+
+13. **First corpus run (M13): P 0.872 / R 0.932 / F1 0.901.** Labels were
+    written before running the scanner and were not changed afterwards. One
+    false positive was a genuine engine bug: `LOOKUP.get(user_key, default)` on
+    a module-level constant dict was treated as a library call (subscripting
+    the same dict was already clean). Fixed; now P 0.891 / R 0.932 / F1 0.911.
+    The remaining 5 FP / 3 FN are all cases predicted in the labels' notes.
+
+14. **Real-world idioms added after reviewing the corpus (M13).** Not corpus
+    tuning (none of these occur in the corpus, numbers unchanged): methods on
+    library-constructed objects (`requests.Session().get`), `when:` conditions
+    on sources (`request.args.get("n", type=int)`), `force_values` for PEM
+    private keys and provider-prefixed tokens (the "* *" prose filter would
+    otherwise hide PEM blocks, which contain spaces), `.hexdigest()` as
+    non-injectable, `with X() as s:` aliasing.
+
+15. **`type=int` source exclusion leaked receiver taint (M13).** After a call
+    stopped being a source because of `type=int`, the receiver
+    `request.args` (itself a source) flowed into the result through the
+    library default. Excluded sources now act as sanitizers for their rule.
+
+16. **Broken test fixture (M13).** A test spliced a PEM string with real
+    newlines into a one-line Python literal and produced unparseable source;
+    the scanner correctly reported a syntax error. Fixed the test.
+
+17. **GitHub push protection (M13).** A test used a Stripe-format live key
+    (`sk_live_…`, a variant of Stripe's documentation key) as a literal; GitHub
+    rejected the push. The token is now assembled at runtime in the test. The
+    commit containing it had not been pushed, so that single local commit was
+    amended (the only amend in the history; order of work unchanged).

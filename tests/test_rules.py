@@ -226,3 +226,45 @@ def test_sink_keyword_equivalents(check):
         H + "def f():\n    requests.get(url=request.args['u'])  # SINK\n    subprocess.run(args='ls ' + request.args['c'], shell=True)\n",
         rule=SSRF,
     )
+
+
+def test_converted_request_values_are_not_sources(check):
+    check(
+        H
+        + "conn = sqlite3.connect('db')\n"
+        + "def f():\n"
+        + "    page = request.args.get('page', 1, type=int)\n"
+        + "    conn.execute('SELECT * FROM t LIMIT 10 OFFSET %d' % page)\n"
+        + "    ids = request.args.getlist('id', type=int)\n"
+        + "    conn.execute('SELECT * FROM t WHERE id IN (%s)' % ','.join(map(str, ids)))\n"
+        + "    name = request.args.get('name', type=str)\n"
+        + "    conn.execute('SELECT * FROM t WHERE n = ' + name)  # SINK\n",
+        rule=SQL,
+    )
+
+
+def test_methods_on_library_session_objects(check):
+    check(
+        H
+        + """
+import httpx
+
+def f():
+    url = request.args['url']
+    session = requests.Session()
+    session.get(url)  # SINK
+    with httpx.Client() as client:
+        client.post(url)  # SINK
+    requests.Session().request('GET', url)  # SINK
+"""
+    ,
+        rule=SSRF,
+    )
+
+
+def test_lookup_in_module_level_dict_with_get(check):
+    check(H + "ORDER = {'new': 'id DESC'}\nconn = sqlite3.connect('db')\ndef f():\n    conn.execute('SELECT * FROM t ORDER BY ' + ORDER.get(request.args['o'], 'id'))\n", rule=SQL)
+
+
+def test_digest_of_tainted_value_is_clean(check):
+    check(H + "import hashlib\nconn = sqlite3.connect('db')\ndef f():\n    h = hashlib.sha256(request.args['q'].encode()).hexdigest()\n    conn.execute(\"SELECT * FROM cache WHERE k = '\" + h + \"'\")\n", rule=SQL)

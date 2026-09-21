@@ -11,7 +11,14 @@ which is what hard-coded-secret rules need::
       min_length: 8
       ignore_values: ["changeme", "<*>", "xxx*"]
       ignore_names: ["*_url", "*_field"]
+      force_values: ["-----begin*private key-----*", "ghp_*"]
       forms: [assign, attribute, subscript, keyword, dict_key, default, compare]
+
+``force_values`` are globs for values that are credentials whatever they are
+called and wherever they appear (a PEM private key, a token with a
+provider-specific prefix). They skip the name, entropy and ignore checks and
+are matched against every string literal in the file, including positional
+call arguments.
 
 ``assigned_to`` globs match *identifier names*, not dotted paths: ``*`` matches
 any run of characters inside a name (``fnmatch`` semantics), compared
@@ -43,7 +50,7 @@ from .base import Issue, RuleKind
 FORMS = ("assign", "attribute", "subscript", "keyword", "dict_key", "default", "compare")
 VALUE_KINDS = ("literal_string",)
 MATCH_KEYS = frozenset(
-    {"assigned_to", "value", "min_entropy", "min_length", "ignore_values", "ignore_names", "forms"}
+    {"assigned_to", "value", "min_entropy", "min_length", "ignore_values", "ignore_names", "force_values", "forms"}
 )
 
 
@@ -65,6 +72,7 @@ class CompiledMatch:
     min_entropy: float
     min_length: int
     forms: frozenset[str]
+    force_values: tuple[str, ...] = ()
 
 
 def _str_list(value: Any) -> bool:
@@ -95,7 +103,7 @@ class PatternKind(RuleKind):
         length = match.get("min_length", 1)
         if isinstance(length, bool) or not isinstance(length, int) or length < 0:
             issues.append(("match.min_length", "must be a non-negative integer"))
-        for key in ("ignore_values", "ignore_names"):
+        for key in ("ignore_values", "ignore_names", "force_values"):
             if key in match and not _str_list(match[key]):
                 issues.append((f"match.{key}", "must be a list of non-empty strings"))
         if "forms" in match:
@@ -116,6 +124,7 @@ class PatternKind(RuleKind):
             min_entropy=float(m.get("min_entropy", 0)),
             min_length=int(m.get("min_length", 1)),
             forms=frozenset(m.get("forms", FORMS)),
+            force_values=tuple(g.lower() for g in m.get("force_values", ())),
         )
 
     # -- analysis ------------------------------------------------------------------
@@ -126,25 +135,38 @@ class PatternKind(RuleKind):
         for rule in rules:
             cm: CompiledMatch = rule.compiled
             seen: set[tuple] = set()
-            for form, name, value_node, anchor in candidates:
-                if form not in cm.forms:
+            reported_values: set[int] = set()
+            forced = []
+            if cm.force_values:
+                named = {id(v): (form, name, anchor) for form, name, v, anchor in candidates}
+                for node in ast.walk(module.tree):
+                    if _is_str(node) and _globs_match(node.value.lower(), cm.force_values):
+                        form, name, anchor = named.get(id(node), ("literal", "<string literal>", node))
+                        forced.append((form, name, node, anchor, True))
+            regular = [(form, name, v, anchor, False) for form, name, v, anchor in candidates]
+            for form, name, value_node, anchor, is_forced in forced + regular:
+                if id(value_node) in reported_values:
                     continue
                 value = value_node.value
-                lname = name.lower()
-                if not _globs_match(lname, cm.names) or _globs_match(lname, cm.ignore_names):
-                    continue
-                if len(value) < max(cm.min_length, 1):
-                    continue
-                if _globs_match(value.lower(), cm.ignore_values):
-                    continue
+                if not is_forced:
+                    if form not in cm.forms:
+                        continue
+                    lname = name.lower()
+                    if not _globs_match(lname, cm.names) or _globs_match(lname, cm.ignore_names):
+                        continue
+                    if len(value) < max(cm.min_length, 1):
+                        continue
+                    if _globs_match(value.lower(), cm.ignore_values):
+                        continue
                 entropy = shannon_entropy(value)
-                if entropy < cm.min_entropy:
+                if not is_forced and entropy < cm.min_entropy:
                     continue
                 loc = module.location(anchor)
                 key = (loc.line, loc.col, name)
                 if key in seen:
                     continue
                 seen.add(key)
+                reported_values.add(id(value_node))
                 shown = redact(value)
                 digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
                 findings.append(

@@ -25,11 +25,13 @@ rules:
     sources:
       - pattern: flask.request.args
       - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+        # request.args.get('page', type=int) returns a converted number
+        when: &not_converted {kwarg: type, not_in: [int, float, bool]}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -51,6 +53,7 @@ rules:
       - {pattern: "*.execute", arg: 0, kwarg: [sql, query, statement, operation]}
       - {pattern: "*.executemany", arg: 0}
       - {pattern: "*.executescript", arg: 0}
+      - {pattern: "*.exec_driver_sql", arg: 0}
       - {pattern: sqlalchemy.text, arg: 0}
       - {pattern: sqlalchemy.sql.text, arg: 0}
       - {pattern: sqlalchemy.sql.expression.text, arg: 0}
@@ -76,12 +79,12 @@ rules:
       quote them with shlex.quote(). Never eval/exec user data.
     sources:
       - pattern: flask.request.args
-      - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+      - {pattern: flask.request.args.get, when: *not_converted}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -144,12 +147,12 @@ rules:
       Note: realpath(...).startswith(BASE) guards are not recognised by this rule.
     sources:
       - pattern: flask.request.args
-      - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+      - {pattern: flask.request.args.get, when: *not_converted}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -206,12 +209,12 @@ rules:
       allowlisted set of URLs, or validate the parsed host against an allowlist.
     sources:
       - pattern: flask.request.args
-      - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+      - {pattern: flask.request.args.get, when: *not_converted}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -244,6 +247,40 @@ rules:
       - {pattern: httpx.request, arg: 1, kwarg: url}
       - {pattern: http.client.HTTPConnection, arg: 0, kwarg: host}
       - {pattern: http.client.HTTPSConnection, arg: 0, kwarg: host}
+      # methods on objects returned by library constructors: requests.Session().get(url)
+      - {pattern: requests.Session.get, arg: 0, kwarg: url}
+      - {pattern: requests.Session.post, arg: 0, kwarg: url}
+      - {pattern: requests.Session.put, arg: 0, kwarg: url}
+      - {pattern: requests.Session.delete, arg: 0, kwarg: url}
+      - {pattern: requests.Session.patch, arg: 0, kwarg: url}
+      - {pattern: requests.Session.head, arg: 0, kwarg: url}
+      - {pattern: requests.Session.options, arg: 0, kwarg: url}
+      - {pattern: requests.Session.request, arg: 1, kwarg: url}
+      - {pattern: httpx.Client.get, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.post, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.put, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.delete, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.patch, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.head, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.options, arg: 0, kwarg: url}
+      - {pattern: httpx.Client.request, arg: 1, kwarg: url}
+      - {pattern: httpx.AsyncClient.get, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.post, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.put, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.delete, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.patch, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.head, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.options, arg: 0, kwarg: url}
+      - {pattern: httpx.AsyncClient.request, arg: 1, kwarg: url}
+      - {pattern: aiohttp.ClientSession.get, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.post, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.put, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.delete, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.patch, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.head, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.options, arg: 0, kwarg: url}
+      - {pattern: aiohttp.ClientSession.request, arg: 1, kwarg: url}
+      - {pattern: urllib3.PoolManager.request, arg: 1, kwarg: url}
     sanitizers: []
 
   - id: py.xss-template
@@ -257,12 +294,12 @@ rules:
       (render_template("page.html", name=name)), or escape it with markupsafe.escape().
     sources:
       - pattern: flask.request.args
-      - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+      - {pattern: flask.request.args.get, when: *not_converted}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -298,12 +335,12 @@ rules:
       yaml.load(data, Loader=yaml.SafeLoader) for YAML.
     sources:
       - pattern: flask.request.args
-      - pattern: flask.request.args.get
-      - pattern: flask.request.args.getlist
+      - {pattern: flask.request.args.get, when: *not_converted}
+      - {pattern: flask.request.args.getlist, when: *not_converted}
       - pattern: flask.request.form
-      - pattern: flask.request.form.*
+      - {pattern: flask.request.form.*, when: *not_converted}
       - pattern: flask.request.values
-      - pattern: flask.request.values.*
+      - {pattern: flask.request.values.*, when: *not_converted}
       - pattern: flask.request.json
       - pattern: flask.request.get_json
       - pattern: flask.request.data
@@ -375,3 +412,12 @@ rules:
                       "example", "example-*", "dummy*", "fake*", "test", "testing", "test-*",
                       "placeholder*", "replace*", "insert*", "secret", "password", "none",
                       "null", "redacted", "* *"]
+      # Unmistakable credentials, reported wherever they appear (any variable name,
+      # positional arguments...). `?` runs require a realistic length so that
+      # prefix checks like token.startswith("ghp_") are not reported.
+      force_values: ["-----begin*private key-----?*?-----end*",
+                     "sk_live_????????????????*", "rk_live_????????????????*",
+                     "ghp_????????????????????*", "gho_????????????????????*",
+                     "ghs_????????????????????*", "ghu_????????????????????*",
+                     "github_pat_????????????????????*", "glpat-????????????????????*",
+                     "xoxb-??????????*", "xoxp-??????????*", "xoxa-??????????*"]

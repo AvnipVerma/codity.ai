@@ -283,7 +283,7 @@ class FunctionAnalyzer:
         matched = self.rules.sources.match(names)
         if not matched:
             return EMPTY
-        rules = frozenset(r for _, r in matched)
+        rules = frozenset(spec.rule_id for _, spec in matched)
         origin = SourceSite(self.mod.location(node), self.mod.unparse(node, 120), matched[0][0])
         return TaintValue.of(origin, rules)
 
@@ -420,7 +420,8 @@ class FunctionAnalyzer:
         for item in node.items:
             tv = self.eval(item.context_expr, state)
             if item.optional_vars is not None:
-                self.assign(item.optional_vars, VarVal(tv), state, None)
+                # `with requests.Session() as s:` - __enter__ usually returns self
+                self.assign(item.optional_vars, VarVal(tv), state, item.context_expr)
         return self.exec_block(node.body, state)
 
     def s_try(self, node: ast.Try, state: State) -> State | None:
@@ -960,11 +961,21 @@ class FunctionAnalyzer:
                     tv = self.sink_argument(spec, pos, kws, recv)
                     if tv and self.report(spec, tv, node, func):
                         fired.add(spec.rule_id)
-            src = self.rules.sources.match(names)
+            src = []
+            converted = set()
+            for text, spec in self.rules.sources.match(names):
+                if self.when_holds(spec, node, state):
+                    src.append((text, spec))
+                else:
+                    # e.g. request.args.get("n", type=int): the library converts the
+                    # value, so the result is clean for that rule (receiver included)
+                    converted.add(spec.rule_id)
             san = self.rules.sanitizers.match(names)
+            if converted:
+                san = list(san) + [("", r) for r in sorted(converted)]
 
         if src:
-            rules = frozenset(r for _, r in src)
+            rules = frozenset(spec.rule_id for _, spec in src)
             ret = TaintValue.of(SourceSite(self.mod.location(node), self.mod.unparse(node, 120), src[0][0]), rules)
         elif targets:
             ret = self.apply_targets(targets, node, func, pos, kws, state)
@@ -1209,10 +1220,14 @@ class FunctionAnalyzer:
         """Is this access path rooted at a data variable (not a module/import)?"""
         if path is None:
             return False
-        refs = state.aliases.get(path[0])
-        if refs is None:
-            return self.is_local(path[0]) or path[0] in state.vars or self.fn.kind == "module"
-        return all(r.kind == INST for r in refs)
+        root = path[0]
+        refs = state.aliases.get(root)
+        if refs is not None:
+            return all(r.kind == INST for r in refs)
+        if self.is_local(root) or root in state.vars or self.fn.kind == "module":
+            return True
+        # a module-level variable (not an import): LOOKUP.get(key), CACHE.values()
+        return root in self.res.assigned and root not in self.res.bindings
 
     def library_call(self, node, func, names, pos, kws, recv, state) -> TaintValue:
         attr = func.attr if isinstance(func, ast.Attribute) else None
@@ -1229,18 +1244,18 @@ class FunctionAnalyzer:
                     self.mutate(root, sels, attr, node, func, pos, kws, state)
                     return EMPTY
                 if attr in KEYED_GETTERS or attr in WHOLE_GETTERS:
-                    vv = self.read_var(root, state)
-                    if vv is not None:
-                        if attr in KEYED_GETTERS and pos and not pos[0][2]:
-                            key = const_key(node.args[0]) or ANY_KEY
-                            tv = vv.read(sels + (key,))
-                            for extra, _, _ in pos[1:]:
-                                tv = tv.join(extra)
-                            for kname, ktv, _ in kws:
-                                if kname == "default":
-                                    tv = tv.join(ktv)
-                            return tv
-                        return vv.read(sels)
+                    # a data variable with no recorded taint is clean
+                    vv = self.read_var(root, state) or CLEAN
+                    if attr in KEYED_GETTERS and pos and not pos[0][2]:
+                        key = const_key(node.args[0]) or ANY_KEY
+                        tv = vv.read(sels + (key,))
+                        for extra, _, _ in pos[1:]:
+                            tv = tv.join(extra)
+                        for kname, ktv, _ in kws:
+                            if kname == "default":
+                                tv = tv.join(ktv)
+                        return tv
+                    return vv.read(sels)
         args_tv = EMPTY
         for tv, _, _ in pos:
             args_tv = args_tv.join(tv)

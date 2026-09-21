@@ -15,7 +15,8 @@ What this module follows
 * ``getattr(obj, "constant")`` resolves like ``obj.constant``.
 * Calls produce a :data:`RET` reference ("the value returned by calling X"),
   which the taint engine turns into an instance reference when X is a class
-  defined in the scanned project.
+  defined in the scanned project. Methods on a returned value are presented
+  as ``X.method`` (``requests.Session().get`` -> ``requests.Session.get``).
 
 What it does not follow (documented in README.md)
 -------------------------------------------------
@@ -251,11 +252,17 @@ class ModuleResolver:
 
 
 def attr_refs(base: Iterable[Ref], attr: str) -> frozenset[Ref]:
+    """References for ``base.attr``.
+
+    An attribute of the value returned by calling ``f`` is presented as
+    ``f.attr``: ``requests.Session().get`` becomes ``requests.Session.get``,
+    so rules can name methods of objects built by library constructors.
+    """
     out = set()
     for r in base:
         if r.kind == PATH:
             out.add(Ref(PATH, f"{r.name}.{attr}"))
-        elif r.kind == INST:
+        elif r.kind in (INST, RET):
             out.add(Ref(BOUND, f"{r.name}.{attr}"))
     return frozenset(out)
 
