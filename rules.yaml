@@ -21,7 +21,25 @@ rules:
     cwe: CWE-798
     message: "Hard-coded credential"
     kind: pattern
+    precision: medium
+    help: >-
+      Load credentials at runtime from the environment or a secret manager
+      (os.environ["API_KEY"], a vault client...) instead of committing them.
     match:
-      assigned_to: ["*_key", "*_secret", "*password*", "*token*"]
+      assigned_to: ["*_key", "*_secret", "*secret*", "*password*", "*passwd*", "*_pwd", "*token*", "apikey", "*_apikey"]
       value: literal_string
       min_entropy: 3.5
+      min_length: 8
+      # Names that match the globs above but hold something other than a secret.
+      ignore_names: ["*_url", "*_uri", "*_endpoint", "*_field", "*_name", "*_path", "*_file",
+                     "*_dir", "*_header", "*_env", "*_env_var", "*_var", "*_type", "*_label",
+                     "*_prompt", "*_msg", "*_message", "*_help", "*_text", "*_error", "*_pattern",
+                     "*_regex", "*_format", "*_template", "*_prefix", "*_suffix", "*_length",
+                     "*_len", "*_param", "*_column", "*_attr", "*_class"]
+      # Placeholders and prose. Globs are matched case-insensitively against the value;
+      # "* *" skips any value containing a space (sentences, "Bearer <x>" templates).
+      ignore_values: ["changeme", "change_me", "change-me", "changeit", "your*", "*_here", "*-here",
+                      "<*>", "{*}", "${*}", "%(*", "xxx*", "[*][*][*]*", "todo*", "fixme*", "tbd",
+                      "example", "example-*", "dummy*", "fake*", "test", "testing", "test-*",
+                      "placeholder*", "replace*", "insert*", "secret", "password", "none",
+                      "null", "redacted", "* *"]
