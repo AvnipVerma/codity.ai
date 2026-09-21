@@ -61,9 +61,10 @@ def _decorator_names(node: ast.AST) -> set[str]:
 def scope_facts(body: list, params: list[str]):
     """Names bound in a function body (Python's scoping rules, simplified).
 
-    Returns ``(locals, globals, nonlocals, has_nested, const_collections)``.
-    ``const_collections`` are locals assigned exactly once, to a literal
-    collection of constants, and never mutated in place.
+    Returns ``(locals, globals, nonlocals, has_nested, const_collections,
+    calls)``. ``const_collections`` are locals assigned exactly once, to a
+    literal collection of constants, and never mutated in place; ``calls`` are
+    the call nodes of this scope (for ordering the fixpoint).
     """
     local = set(params)
     globals_: set[str] = set()
@@ -72,6 +73,7 @@ def scope_facts(body: list, params: list[str]):
     stores: Counter = Counter()
     const_candidates: dict[str, bool] = {}
     mutated: set[str] = set()
+    calls: list[ast.Call] = []
     stack = list(body)
     while stack:
         node = stack.pop()
@@ -132,13 +134,21 @@ def scope_facts(body: list, params: list[str]):
             if len(targets) == 1 and isinstance(targets[0], ast.Name):
                 const_candidates[targets[0].id] = is_constant_collection_literal(node.value)
         elif t is ast.Call:
+            calls.append(node)
             f = node.func
             if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.attr in MUTATING_METHODS:
                 mutated.add(f.value.id)
-        stack.extend(ast.iter_child_nodes(node))
+        for name in node._fields:
+            value = getattr(node, name, None)
+            if value.__class__ is list:
+                for v in value:
+                    if isinstance(v, ast.AST):
+                        stack.append(v)
+            elif isinstance(value, ast.AST):
+                stack.append(value)
     local -= globals_ | nonlocals
     consts = frozenset(n for n, ok in const_candidates.items() if ok and stores[n] == 1 and n not in mutated)
-    return frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts
+    return frozenset(local), frozenset(globals_), frozenset(nonlocals), has_nested, consts, calls
 
 
 class ClassInfo:
@@ -147,9 +157,9 @@ class ClassInfo:
         self.module = module
         self.node = node
         self.methods: dict[str, FunctionInfo] = {}
-        _, _, _, _, consts = scope_facts(
+        consts = scope_facts(
             [s for s in node.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], []
-        )
+        )[4]
         self.const_attrs = consts
         self.bases: list[ClassInfo] | None = None
 
@@ -183,7 +193,8 @@ class FunctionInfo:
             body = [node.body]
         else:
             body = node.body
-        local, globs, nonloc, has_nested, consts = scope_facts(body, [p.name for p in self.params])
+        local, globs, nonloc, has_nested, consts, calls = scope_facts(body, [p.name for p in self.params])
+        self.calls = calls
         self.local_names = local
         self.global_decls = globs
         self.nonlocal_decls = nonloc
@@ -320,10 +331,10 @@ class TaintProgram:
 
     def _module_consts(self, mod) -> frozenset:
         body = [s for s in mod.tree.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-        _, _, _, _, consts = scope_facts(body, [])
+        consts = scope_facts(body, [])[4]
         # a function mutating the collection (ALLOWED.add(x)) disqualifies it
         mutated = set()
-        for node in ast.walk(mod.tree):
+        for node in mod.nodes:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 f = node.func
                 if isinstance(f.value, ast.Name) and f.attr in MUTATING_METHODS:
@@ -539,9 +550,7 @@ class TaintProgram:
             res = fi.module.resolver
             first = fi.params[0].name if fi.params and fi.params[0].implicit else None
             callees = set()
-            for node in _body_nodes(fi):
-                if not isinstance(node, ast.Call):
-                    continue
+            for node in fi.calls:
                 refs = res.refs_for(node.func, res.module_lookup)
                 f = node.func
                 if first and isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == first:

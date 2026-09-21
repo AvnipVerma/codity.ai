@@ -78,32 +78,35 @@ def matches(pattern: tuple[str, ...], name: tuple[str, ...]) -> bool:
 class PatternIndex(Generic[T]):
     """A set of compiled patterns, each carrying a payload.
 
-    Patterns are bucketed by their final segment so that looking up a call
-    costs one dict probe plus a scan of the (usually tiny) wildcard-final
-    bucket, rather than a scan over every rule.
+    Patterns ending in a literal segment are bucketed by that segment;
+    patterns ending in ``*`` are bucketed by their first segment (or kept in a
+    catch-all list when that is ``*`` too). A lookup therefore touches only
+    patterns that can possibly match. Results are memoised per candidate list,
+    since the same names are looked up over and over.
     """
 
     def __init__(self) -> None:
         # entry = (segments, pattern_text, payload, insertion_seq)
-        self._by_last: dict[str, list[tuple[tuple[str, ...], str, T, int]]] = {}
-        self._wild_last: list[tuple[tuple[str, ...], str, T, int]] = []
+        self._by_last: dict[str, list] = {}
+        self._wild_by_first: dict[str, list] = {}
+        self._wild_any: list = []
         self._seq = 0
+        self._cache: dict[tuple, list] = {}
 
     def add(self, pattern_text: str, payload: T) -> None:
         segs = compile_pattern(pattern_text)
         entry = (segs, pattern_text, payload, self._seq)
         self._seq += 1
-        if segs[-1] == WILDCARD:
-            self._wild_last.append(entry)
-        else:
+        self._cache.clear()
+        if segs[-1] != WILDCARD:
             self._by_last.setdefault(segs[-1], []).append(entry)
+        elif segs[0] != WILDCARD:
+            self._wild_by_first.setdefault(segs[0], []).append(entry)
+        else:
+            self._wild_any.append(entry)
 
     def __bool__(self) -> bool:
         return self._seq > 0
-
-    def could_match_last(self, segment: str) -> bool:
-        """Cheap pre-filter: could any pattern end with ``segment``?"""
-        return bool(self._wild_last) or segment in self._by_last
 
     def match(self, names: Iterable[tuple[str, ...]]) -> list[tuple[str, T]]:
         """Return ``(pattern_text, payload)`` for every pattern matching any name.
@@ -111,15 +114,21 @@ class PatternIndex(Generic[T]):
         The result is de-duplicated and ordered by insertion order of the
         patterns, independent of the order of ``names``.
         """
+        key = tuple(names)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
         hits: dict[int, tuple[str, T]] = {}
-        for name in names:
+        for name in key:
             if not name:
                 continue
-            for bucket in (self._by_last.get(name[-1], ()), self._wild_last):
+            for bucket in (self._by_last.get(name[-1], ()), self._wild_by_first.get(name[0], ()), self._wild_any):
                 for segs, text, payload, seq in bucket:
                     if seq not in hits and matches(segs, name):
                         hits[seq] = (text, payload)
-        return [hits[k] for k in sorted(hits)]
+        result = [hits[k] for k in sorted(hits)]
+        self._cache[key] = result
+        return result
 
 
 def dotted(name: tuple[str, ...]) -> str:

@@ -83,6 +83,14 @@ def _globs_match(name: str, globs: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(name, g) for g in globs)
 
 
+def _literal_prefix(glob: str) -> str:
+    """The part of a glob before its first wildcard character."""
+    for i, ch in enumerate(glob):
+        if ch in "*?[":
+            return glob[:i]
+    return glob
+
+
 class PatternKind(RuleKind):
     name = "pattern"
     fields = frozenset({"match"})
@@ -130,7 +138,7 @@ class PatternKind(RuleKind):
     # -- analysis ------------------------------------------------------------------
 
     def analyze(self, module, rules: Sequence) -> Iterable[Finding]:
-        candidates = list(_candidates(module.tree))
+        candidates = list(_candidates(module.nodes))
         findings: list[Finding] = []
         for rule in rules:
             cm: CompiledMatch = rule.compiled
@@ -139,8 +147,12 @@ class PatternKind(RuleKind):
             forced = []
             if cm.force_values:
                 named = {id(v): (form, name, anchor) for form, name, v, anchor in candidates}
-                for node in ast.walk(module.tree):
-                    if _is_str(node) and _globs_match(node.value.lower(), cm.force_values):
+                prefixes = tuple(_literal_prefix(g) for g in cm.force_values)
+                for node in module.nodes:
+                    if node.__class__ is not ast.Constant or node.value.__class__ is not str:
+                        continue
+                    low = node.value.lower()
+                    if low.startswith(prefixes) and _globs_match(low, cm.force_values):
                         form, name, anchor = named.get(id(node), ("literal", "<string literal>", node))
                         forced.append((form, name, node, anchor, True))
             regular = [(form, name, v, anchor, False) for form, name, v, anchor in candidates]
@@ -199,12 +211,15 @@ def _target_name(target: ast.AST) -> tuple[str, str] | None:
     return None
 
 
-def _candidates(tree: ast.AST) -> Iterator[tuple[str, str, ast.Constant, ast.AST]]:
+def _candidates(nodes: list) -> Iterator[tuple[str, str, ast.Constant, ast.AST]]:
     """Yield ``(form, name, string-constant node, node to report)``."""
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    for node in nodes:
+        cls = node.__class__
+        if cls is ast.Assign or cls is ast.AnnAssign:
             value = node.value
+            if value is None:
+                continue
+            targets = node.targets if cls is ast.Assign else [node.target]
             for t in targets:
                 if isinstance(t, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
                     if len(t.elts) == len(value.elts):
@@ -213,21 +228,22 @@ def _candidates(tree: ast.AST) -> Iterator[tuple[str, str, ast.Constant, ast.AST
                             if got and _is_str(sub_v):
                                 yield got[0], got[1], sub_v, node
                     continue
-                got = _target_name(t)
-                if got and _is_str(value):
-                    yield got[0], got[1], value, node
-        elif isinstance(node, ast.NamedExpr):
+                if _is_str(value):
+                    got = _target_name(t)
+                    if got:
+                        yield got[0], got[1], value, node
+        elif cls is ast.NamedExpr:
             if _is_str(node.value):
                 yield "assign", node.target.id, node.value, node
-        elif isinstance(node, ast.Call):
+        elif cls is ast.Call:
             for kw in node.keywords:
                 if kw.arg and _is_str(kw.value):
                     yield "keyword", kw.arg, kw.value, kw
-        elif isinstance(node, ast.Dict):
+        elif cls is ast.Dict:
             for k, v in zip(node.keys, node.values):
                 if _is_str(k) and _is_str(v):
                     yield "dict_key", k.value, v, k
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        elif cls is ast.FunctionDef or cls is ast.AsyncFunctionDef or cls is ast.Lambda:
             args = node.args
             positional = args.posonlyargs + args.args
             for param, default in zip(positional[len(positional) - len(args.defaults):], args.defaults):
@@ -236,12 +252,12 @@ def _candidates(tree: ast.AST) -> Iterator[tuple[str, str, ast.Constant, ast.AST
             for param, default in zip(args.kwonlyargs, args.kw_defaults):
                 if default is not None and _is_str(default):
                     yield "default", param.arg, default, default
-        elif isinstance(node, ast.Compare):
-            if len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        elif cls is ast.Compare:
+            if len(node.ops) == 1 and node.ops[0].__class__ is ast.Eq:
                 left, right = node.left, node.comparators[0]
                 for named, lit in ((left, right), (right, left)):
                     if _is_str(lit):
-                        if isinstance(named, ast.Name):
+                        if named.__class__ is ast.Name:
                             yield "compare", named.id, lit, node
-                        elif isinstance(named, ast.Attribute):
+                        elif named.__class__ is ast.Attribute:
                             yield "compare", named.attr, lit, node

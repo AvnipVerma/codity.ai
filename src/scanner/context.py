@@ -18,6 +18,29 @@ if TYPE_CHECKING:  # pragma: no cover
     from .resolve import ModuleResolver, ProjectIndex
 
 
+def walk(root: ast.AST) -> list[ast.AST]:
+    """Every node under ``root`` (pre-order), without ``ast.walk``'s generators.
+
+    ``ast.walk`` goes through two nested Python generators per node; on large
+    trees this plain loop is several times faster.
+    """
+    out: list[ast.AST] = []
+    stack = [root]
+    AST = ast.AST
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        for name in node._fields:
+            value = getattr(node, name, None)
+            if value.__class__ is list:
+                for item in reversed(value):
+                    if isinstance(item, AST):
+                        stack.append(item)
+            elif isinstance(value, AST):
+                stack.append(value)
+    return out
+
+
 def split_lines(text: str) -> list[str]:
     """Split like the Python tokenizer does (only \\n, \\r\\n and \\r end a line).
 
@@ -47,6 +70,7 @@ class ModuleContext:
         self.program = program
         self._resolver: ModuleResolver | None = None
         self._ascii: dict[int, bool] = {}
+        self._nodes: list[ast.AST] | None = None
 
     def __repr__(self) -> str:
         return f"<ModuleContext {self.path} ({self.module_name})>"
@@ -58,6 +82,13 @@ class ModuleContext:
 
             self._resolver = ModuleResolver(self.module_name, self.is_package, self.tree)
         return self._resolver
+
+    @property
+    def nodes(self) -> list[ast.AST]:
+        """All nodes of the module, computed once and shared by rule kinds."""
+        if self._nodes is None:
+            self._nodes = walk(self.tree)
+        return self._nodes
 
     # -- positions -----------------------------------------------------------
 

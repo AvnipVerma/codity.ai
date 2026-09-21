@@ -102,7 +102,9 @@ def scan(target: str, rules: list[Rule], options: ScanOptions | None = None) -> 
     for module in program.modules:
         file_findings = by_file.pop(module.path, [])
         try:
-            sups = parse_suppressions(module.text)
+            # Only files mentioning the directive are tokenized (a speed-up, not the
+            # parser: comments are still found with tokenize).
+            sups = parse_suppressions(module.text) if "codity" in module.text.lower() else []
         except Exception as exc:  # tokenize.TokenError, IndentationError...
             program.warn(module.path, f"cannot read suppression comments: {exc}")
             sups = []
