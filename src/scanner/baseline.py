@@ -74,19 +74,28 @@ def dumps(document: dict) -> str:
 def load(path: str) -> Counter:
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            text = fh.read()
     except FileNotFoundError:
         raise BaselineError(f"baseline file not found: {path}") from None
-    except (OSError, json.JSONDecodeError) as exc:
+    except OSError as exc:
         raise BaselineError(f"cannot read baseline {path}: {exc}") from None
+    return load_text(text, path)
+
+
+def load_text(text: str, source: str = "baseline") -> Counter:
+    """Parse a baseline document into ``{fingerprint: count}``."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BaselineError(f"cannot read baseline {source}: {exc}") from None
     if not isinstance(data, dict) or data.get("version") != BASELINE_VERSION:
-        raise BaselineError(f"{path}: unsupported baseline format (expected version {BASELINE_VERSION})")
+        raise BaselineError(f"{source}: unsupported baseline format (expected version {BASELINE_VERSION})")
     counts: Counter = Counter()
     for entry in data.get("entries", []):
         try:
             counts[str(entry["fingerprint"])] += int(entry.get("count", 1))
-        except (KeyError, TypeError, ValueError):
-            raise BaselineError(f"{path}: malformed baseline entry {entry!r}") from None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise BaselineError(f"{source}: malformed baseline entry {entry!r}") from None
     return counts
 
 
