@@ -1,0 +1,27 @@
+rules:
+  - id: py.sql-injection
+    severity: critical
+    cwe: CWE-89
+    message: "Untrusted input reaches a SQL query without parameterization"
+    kind: taint
+    sources:
+      - pattern: flask.request.args.get
+      - pattern: flask.request.form.*
+      - pattern: os.environ.get
+    sinks:
+      - pattern: "*.execute"
+        arg: 0
+      - pattern: "*.executescript"
+        arg: 0
+    sanitizers:
+      - pattern: myapp.db.quote_identifier
+
+  - id: py.hardcoded-secret
+    severity: high
+    cwe: CWE-798
+    message: "Hard-coded credential"
+    kind: pattern
+    match:
+      assigned_to: ["*_key", "*_secret", "*password*", "*token*"]
+      value: literal_string
+      min_entropy: 3.5

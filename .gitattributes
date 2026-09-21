@@ -1,0 +1,7 @@
+# Keep LF everywhere so corpus files, schemas and snapshots are byte-identical
+# on every platform (the scanner's output must be deterministic across machines).
+* text=auto eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf

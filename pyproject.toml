@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codity-scanner"
+version = "0.1.0"
+description = "A static taint analyzer for Python source code"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# jsonschema is used only by the test-suite to validate SARIF output against the
+# vendored official schema. The scanner itself never imports it.
+test = [
+    "pytest>=7",
+    "jsonschema>=4",
+]
+
+[project.scripts]
+scanner = "scanner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running tests (the 500-file performance test); run with `pytest -m slow`",
+    "known_limitation: documents behaviour the analysis deliberately does not support",
+]
+addopts = "-m \"not slow\""
