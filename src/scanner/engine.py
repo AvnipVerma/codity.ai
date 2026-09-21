@@ -45,6 +45,8 @@ class ScanResult:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     baseline_used: bool = False
     elapsed: float = 0.0
+    # Source lines of files that have findings (for reports that show code).
+    lines: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def all_findings(self) -> list[Finding]:
@@ -126,6 +128,9 @@ def scan(target: str, rules: list[Rule], options: ScanOptions | None = None) -> 
     active.sort(key=Finding.sort_key)
     suppressed.sort(key=Finding.sort_key)
     diagnostics = sorted(program.diagnostics, key=lambda d: (d.file or "", d.message))
+    wanted = {f.location.file for f in active + suppressed}
+    wanted |= {s.location.file for f in active for s in f.path}
+    lines = {m.path: m.lines for m in program.modules if m.path in wanted}
     return ScanResult(
         root=root,
         files=[m.path for m in program.modules],
@@ -136,4 +141,5 @@ def scan(target: str, rules: list[Rule], options: ScanOptions | None = None) -> 
         diagnostics=diagnostics,
         baseline_used=options.baseline is not None,
         elapsed=time.perf_counter() - started,
+        lines=lines,
     )

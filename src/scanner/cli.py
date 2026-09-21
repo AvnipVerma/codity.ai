@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_p = sub.add_parser("scan", help="scan a target and report findings")
     common(scan_p)
-    scan_p.add_argument("--format", choices=("table", "sarif"), default="table")
+    scan_p.add_argument("--format", choices=("table", "sarif", "html"), default="table")
     scan_p.add_argument(
         "--fail-on",
         choices=SEVERITY_NAMES,
@@ -178,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         from .output.sarif import render_sarif
 
         _write(render_sarif(result), args.output)
+        if not args.quiet:
+            _stderr(timing)
+    elif args.format == "html":
+        from .output.html import render_html
+
+        _write(render_html(result), args.output)
         if not args.quiet:
             _stderr(timing)
     else:

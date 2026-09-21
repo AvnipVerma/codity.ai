@@ -98,7 +98,6 @@ Cut:
 - Regex-based validators, which I would have had to interpret.
 - Template-file analysis.
 - Parallel parsing.
-- The optional HTML report.
 
 With another week, in order:
 

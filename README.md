@@ -8,7 +8,7 @@ string building, containers, attributes and function calls, within a file and
 across files, and reports the flows that reach a dangerous operation (SQL
 execution, shell commands, file paths, outbound URLs, template rendering,
 deserialization) without passing a sanitizer. Each finding carries the full
-route. Rules are YAML; output is SARIF 2.1.0 or a readable table; inline
+route. Rules are YAML; output is SARIF 2.1.0, a readable table, or an HTML report; inline
 suppressions and position-independent baselines keep repeat scans quiet. The
 only runtime dependency is PyYAML.
 
@@ -26,7 +26,7 @@ test, which is opt-in: `pytest -m slow`.
 ## Usage
 
 ```
-scanner scan TARGET [--rules rules.yaml] [--format table|sarif] [-o FILE]
+scanner scan TARGET [--rules rules.yaml] [--format table|sarif|html] [-o FILE]
                     [--fail-on critical|high|medium|low] [--baseline FILE]
                     [--exclude GLOB]... [--no-color] [--no-paths] [--quiet]
                     [--report-unused-suppressions]
@@ -84,6 +84,13 @@ reported results carry `baselineState: new`. Parse failures appear as
 `originalUriBaseIds.SRCROOT` has a description but no URI, so the same checkout
 gives the same bytes on any machine. Secret-pattern results have no
 `codeFlows`.
+
+**HTML** (`--format html -o report.html`) is a single self-contained page with
+no JavaScript: severity filter chips (pure CSS), each finding's route as a
+collapsible list with the code of every step, and the sink line highlighted in
+its context. Everything taken from scanned code is HTML-escaped. Lines holding
+a detected secret are never shown, even as another finding's context. The page
+has no timestamps, so it is deterministic too.
 
 **Exit codes:** `0` the scan ran and nothing at or above `--fail-on` was
 reported (always 0 without `--fail-on`); `1` at least one new, unsuppressed
@@ -361,5 +368,5 @@ written as UTF-8 bytes with `\n`, and a test runs the CLI under three
 | `rules.yaml` | shipped rules: SQL injection, command injection, path traversal, SSRF, XSS/SSTI, insecure deserialization, hard-coded secrets |
 | `corpus/` + `corpus/labels.json` | labelled benchmark corpus (90 files) |
 | `bench/evaluate.py` | precision/recall on the corpus; `bench/gen_large_repo.py` timing project; `bench/public_repos.md` triage |
-| `tests/` | 387 tests (386 by default + the opt-in timing test), one file per component |
+| `tests/` | 393 tests (392 by default + the opt-in timing test), one file per component |
 | `BENCHMARK.md`, `DECISIONS.md` | measured results and design decisions |
